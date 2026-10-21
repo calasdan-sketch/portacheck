@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Scan a repo for paths that break Windows checkouts: reserved names, invalid characters, case collisions, long paths"
 readme = "README.md"
 requires-python = ">=3.9"
+license = "MIT"
 authors = [{ name = "calasdan-sketch" }]
 keywords = ["windows", "portability", "git", "filenames", "case-sensitivity", "paths", "ci"]
 classifiers = [
