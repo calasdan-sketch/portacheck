@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "portacheck"
+version = "0.1.0"
+description = "Scan a repo for paths that break Windows checkouts: reserved names, invalid characters, case collisions, long paths"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "calasdan-sketch" }]
+keywords = ["windows", "portability", "git", "filenames", "case-sensitivity", "paths", "ci"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Environment :: Console",
+    "Topic :: Software Development :: Quality Assurance",
+]
+
+[project.scripts]
+portacheck = "portacheck.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
