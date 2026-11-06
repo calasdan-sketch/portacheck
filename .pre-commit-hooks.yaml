@@ -1,0 +1,7 @@
+- id: portacheck
+  name: portacheck (Windows-safe paths)
+  description: Fail when tracked paths would break a Windows (or macOS) checkout.
+  entry: portacheck --git
+  language: python
+  pass_filenames: false
+  always_run: true
