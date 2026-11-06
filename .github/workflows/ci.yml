@@ -7,11 +7,12 @@ permissions:
   contents: read
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.9", "3.12"]
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -28,5 +29,7 @@ jobs:
       - name: Twine check
         run: twine check dist/*
       - name: Self-scan (portability)
-        run: portacheck . --strict
+        run: |
+          portacheck . --strict
+          portacheck --git --strict --format github
 

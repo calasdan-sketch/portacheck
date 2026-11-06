@@ -43,8 +43,11 @@ def test_multiple_problems_report_all():
     # AND ends with a dot — both findings belong in the report
     found = codes(check_component("AUX."))
     assert "reserved_name" in found and "trailing_dot" in found
-    # a space inside the stem is NOT stripped by Windows -> not reserved
-    assert "reserved_name" not in codes(check_component("CON .txt"))
+    # spaces between the device name and an extension do not help: Git for
+    # Windows (compat/mingw.c is_valid_win32_path) refuses "CON .txt" (0.2.0 fix)
+    assert "reserved_name" in codes(check_component("CON .txt"))
+    # ...but a space inside a longer name is just a name
+    assert "reserved_name" not in codes(check_component("CON X.txt"))
 
 
 def test_relpath_checks_every_component():

@@ -78,7 +78,9 @@ def test_path_length_warns_not_errors(tmp_path):
         deep = deep / f"lvl{i}-{'x' * 12}"
     touch(deep, "file.txt")
     threshold = len(os.path.abspath(tmp_path)) + 25
-    findings = scan_tree(str(tmp_path), max_path=threshold)
+    # 0.2.0 measures prefix + repo-relative path; pin the prefix to the real
+    # root so the threshold means the same thing on every OS / temp dir
+    findings = scan_tree(str(tmp_path), max_path=threshold, prefix_len=len(os.path.abspath(tmp_path)) + 1)
     assert findings, "expected long-path warnings"
     assert all(f.severity == "warn" and f.code == "path_length" for f in findings)
 
@@ -104,12 +106,13 @@ def test_cli_exit_codes_and_json(tmp_path, capsys):
         deep = deep / f"lvl{i}-{'d' * 12}"
     touch(deep, "file.txt")
     threshold = str(len(os.path.abspath(tmp_path)) + 25)
+    pre = ["--prefix-len", str(len(os.path.abspath(tmp_path)) + 1)]
     capsys.readouterr()
-    assert main([str(tmp_path), "--max-path", threshold]) == 0, "warnings alone must not fail"
+    assert main([str(tmp_path), "--max-path", threshold, *pre]) == 0, "warnings alone must not fail"
     capsys.readouterr()
-    assert main([str(tmp_path), "--max-path", threshold, "--strict"]) == 1
+    assert main([str(tmp_path), "--max-path", threshold, "--strict", *pre]) == 1
     capsys.readouterr()
-    assert main([str(tmp_path), "--max-path", threshold, "--json"]) == 0
+    assert main([str(tmp_path), "--max-path", threshold, "--json", *pre]) == 0
     out = capsys.readouterr().out
     assert '"warnings"' in out and "path_length" in out
 
