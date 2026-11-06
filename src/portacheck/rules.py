@@ -10,11 +10,16 @@ from typing import List
 # with or without an extension (CON.txt cannot be created either). Microsoft's
 # "Naming Files, Paths, and Namespaces" page also lists the ISO-8859-1
 # superscript digits ¹ ² ³ as valid COM#/LPT# digits, so COM¹ is reserved too.
-_DIGITS = [str(i) for i in range(1, 10)] + ["\u00b9", "\u00b2", "\u00b3"]
+#
+# Git for Windows refuses a few more at checkout (compat/mingw.c,
+# is_valid_win32_path, with core.protectNTFS on — the default): CONIN$ and
+# CONOUT$, and LPT0 (it accepts any digit after LPT, but only 1-9 after COM).
+# portacheck reserves the union of both lists.
+_SUPERSCRIPTS = ["\u00b9", "\u00b2", "\u00b3"]
 RESERVED = frozenset(
-    ["CON", "PRN", "AUX", "NUL"]
-    + [f"COM{d}" for d in _DIGITS]
-    + [f"LPT{d}" for d in _DIGITS]
+    ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
+    + [f"COM{d}" for d in [str(i) for i in range(1, 10)] + _SUPERSCRIPTS]
+    + [f"LPT{d}" for d in [str(i) for i in range(0, 10)] + _SUPERSCRIPTS]
 )
 
 # '\\' is legal in a POSIX filename but is a path separator on Windows.
@@ -64,6 +69,63 @@ def _fold_char(c: str) -> str:
     return u if len(u) == 1 else c
 
 
+def _is_cjk_compat(c: str) -> bool:
+    o = ord(c)
+    return 0xF900 <= o <= 0xFAFF or 0x2F800 <= o <= 0x2FA1F
+
+
+def mac_nfc(s: str) -> str:
+    """NFC, except CJK compatibility ideographs are kept as they are.
+
+    NFC maps e.g. U+F900 to U+8C48, but HFS+ excludes these ideographs from
+    its decomposition (APFS behaviour is unverified), so flagging them would be
+    a false positive.
+    """
+    if s.isascii():
+        return s
+    if not any(_is_cjk_compat(c) for c in s):
+        return unicodedata.normalize("NFC", s)
+    out, seg = [], []
+    for c in s:
+        if _is_cjk_compat(c):
+            out.append(unicodedata.normalize("NFC", "".join(seg)))
+            out.append(c)
+            seg = []
+        else:
+            seg.append(c)
+    out.append(unicodedata.normalize("NFC", "".join(seg)))
+    return "".join(out)
+
+
+def printable(s: str, escape_backslash: bool = True) -> str:
+    """Make an untrusted string safe to print on a terminal, CI log or report.
+
+    Control, bidi/zero-width format and line/paragraph separator characters
+    become ``\\uXXXX``; undecodable raw bytes (surrogate escapes) become
+    ``\\xNN``. Backslashes are doubled by default so a real ``\\u202e`` typed
+    into a name cannot pass for an escape portacheck produced.
+    """
+    out = []
+    for c in s:
+        o = ord(c)
+        if 0xDC80 <= o <= 0xDCFF:  # surrogateescape'd raw byte
+            out.append(f"\\x{o - 0xDC00:02x}")
+        elif o == 0x5C and escape_backslash:
+            out.append("\\\\")
+        elif o < 32 or o == 127 or 0x80 <= o < 0xA0 or unicodedata.category(c) in ("Cf", "Cs", "Zl", "Zp"):
+            out.append(f"\\u{o:04x}")
+        else:
+            out.append(c)
+    return "".join(out)
+
+
+def show_name(name: str, limit: int = 200) -> str:
+    """Quoted, escaped form of a name for finding details (raw bytes as \\xNN)."""
+    if len(name) > limit:
+        name = name[:80] + "..."
+    return "'" + printable(name).replace("'", "\\'") + "'"
+
+
 def _invisible(c: str) -> bool:
     # Cf = format chars: bidi overrides (U+202E ...), zero-width space/joiners,
     # BOM, soft hyphen. Legal in names but render invisibly or reorder text.
@@ -73,14 +135,19 @@ def _invisible(c: str) -> bool:
 def check_component(name: str, where: str = "") -> List[Finding]:
     """Check one path component (file or directory name)."""
     out: List[Finding] = []
+    if name in (".", ".."):
+        return out  # relative-path markers, not names (Git allows them too)
     loc = where or name
-    if len(name) > 200:  # keep reports readable for absurd names
-        shown = repr(name[:80] + "...")
-    else:
-        shown = repr(name)
-    # Windows strips trailing dots/spaces from a component BEFORE name
-    # resolution, so "AUX." and "AUX " are the reserved device name AUX.
-    stem = name.rstrip(" .").split(".", 1)[0].upper()
+    shown = show_name(name)
+    # Windows strips trailing dots/spaces, and a device name stays reserved
+    # when spaces, an extension or an NTFS stream follow it: "AUX.", "CON .txt",
+    # "nul:x" are all the device. Cut at the first '.' or ':', drop spaces.
+    cut = len(name)
+    for sep in ".:":
+        i = name.find(sep)
+        if i != -1:
+            cut = min(cut, i)
+    stem = name[:cut].rstrip(" ").upper()
     if stem in RESERVED:
         out.append(
             Finding("error", "reserved_name", loc,
@@ -90,7 +157,7 @@ def check_component(name: str, where: str = "") -> List[Finding]:
     if bad:
         out.append(
             Finding("error", "invalid_char", loc,
-                    f"{shown} contains character(s) Windows rejects: {' '.join(repr(c) for c in bad)}")
+                    f"{shown} contains character(s) Windows rejects: {' '.join(show_name(c) for c in bad)}")
         )
     ascii_only = name.isascii()
     if not ascii_only and any(0xD800 <= ord(c) <= 0xDFFF for c in name):
@@ -114,10 +181,7 @@ def check_component(name: str, where: str = "") -> List[Finding]:
                            f"{shown} contains invisible/bidi format character(s) "
                            + " ".join(f"U+{ord(c):04X}" for c in hidden)
                            + " — the name can display differently from what it is"))
-    try:
-        nfc = unicodedata.normalize("NFC", name)
-    except ValueError:  # pragma: no cover - lone surrogates are fine for normalize
-        nfc = name
+    nfc = mac_nfc(name)
     if nfc != name:
         out.append(Finding("warn", "not_nfc", loc,
                            f"{ascii(name[:80])} is not NFC-normalized (composed form: {ascii(nfc[:80])}); "

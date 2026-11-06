@@ -11,10 +11,10 @@ $ portacheck --git          # scan everything tracked in this repo
 
 | Code | Severity | Example | Why it breaks |
 |---|---|---|---|
-| `reserved_name` | error | `docs/CON.md`, `aux.py`, `COM¹.log` | Windows device names, with any extension, in any folder |
+| `reserved_name` | error | `docs/CON.md`, `aux.py`, `CON .txt`, `COM¹.log`, `CONIN$`, `LPT0` | Windows device names, with any extension, trailing spaces or `:stream`, in any folder (union of [Microsoft's list](https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file) and [Git for Windows' `is_valid_win32_path`](https://github.com/git-for-windows/git/blob/main/compat/mingw.c)) |
 | `invalid_char` | error | `todo?.txt`, `a\b.txt`, `12:30.log` | `< > : " \| ? * \` and control chars are rejected by Windows |
 | `trailing_dot` / `trailing_space` | error | `report.`, `notes ` | Windows strips them, so the file "disappears" or collides |
-| `case_collision` | error | `src/Config.json` + `src/config.json` | one file on Windows (and default macOS); reported once, at the shallowest folder |
+| `case_collision` | error | `src/Config.json` + `src/config.json` | one file on Windows (and default macOS); a folder clash is reported once at the folder; clashes between siblings inside it are reported separately |
 | `unicode_collision` | error | `café.png` (NFC) + `café.png` (NFD) | look identical, are distinct bytes; macOS treats them as one name |
 | `component_too_long` | error | a 256-char file name | NTFS allows 255 UTF-16 units per name |
 | `invalid_encoding` | error | a name that is not valid UTF-8 | Git for Windows cannot reproduce it |
@@ -44,7 +44,7 @@ Exit codes: `0` clean, `1` findings (warnings too with `--strict`), `2` setup pr
 |---|---|---|
 | git index (recommended) | `portacheck --git [dir]` | tracked + staged paths, exactly what a clone gets — including names your OS could never create on disk |
 | disk walk (default) | `portacheck [dir]` | every file/folder on disk; skips `.git`, `node_modules`, virtualenvs, caches (override with repeated `--skip`) |
-| stdin | `git diff --name-only -z main... \| portacheck --stdin0` | any NUL-separated list of `/`-separated repo-relative paths |
+| stdin | `git diff --name-only -z --diff-filter=d main... \| portacheck --stdin0` | any NUL-separated list of `/`-separated repo-relative paths (`--diff-filter=d` drops deleted files). A diff only sees changed paths, so it **cannot catch a collision with a file that did not change** — use `--git` for that |
 
 ## CI
 
@@ -87,7 +87,7 @@ pre-commit:
 --allow-empty         exit 0 when there is nothing to scan
 ```
 
-**How path length is measured.** The length on *your* CI runner says nothing about Windows, so portacheck adds `--prefix-len` (default 50; `C:\Users\jane.doe\source\repos\project\` is 44) to each repo-relative path, counts UTF-16 units like Windows does, and warns at 260 or more (MAX_PATH includes the terminating NUL). Only the shallowest too-long folder is reported, with a count of what's inside it.
+**How path length is measured.** The length on *your* CI runner says nothing about Windows, so portacheck adds `--prefix-len` (default 50; `C:\Users\jane.doe\source\repos\project\` is 39) to each repo-relative path, counts UTF-16 units like Windows does, and warns when a file reaches 260 (MAX_PATH includes the terminating NUL) or a folder reaches 248 (MAX_PATH minus room for an 8.3 name — the limit Git for Windows applies when it creates folders). Only the shallowest too-long path is reported, with a count of what's inside it. In a disk walk an empty folder is measured as a file.
 
 ## How it compares
 

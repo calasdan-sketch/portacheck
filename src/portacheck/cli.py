@@ -35,7 +35,7 @@ def main(argv: List[str] | None = None) -> int:
                     help="Windows MAX_PATH, counting the terminating NUL (default: %(default)s)")
     ap.add_argument("--prefix-len", type=_positive, default=DEFAULT_PREFIX_LEN,
                     help="assumed length of the Windows folder the repo is cloned into, with trailing "
-                         "backslash (default: %(default)s, e.g. C:\\Users\\jane.doe\\source\\repos\\project\\ is 44)")
+                         "backslash (default: %(default)s, e.g. C:\\Users\\jane.doe\\source\\repos\\project\\ is 39)")
     ap.add_argument("--skip", action="append", help="directory name to skip in a disk walk (repeatable; default: "
                     + ", ".join(DEFAULT_SKIP) + ")")
     ap.add_argument("--ignore", action="append", default=[], metavar="GLOB",

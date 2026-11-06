@@ -6,12 +6,12 @@ undecodable bytes become visible ``\\uXXXX`` / ``\\xNN`` escapes.
 """
 from __future__ import annotations
 
+import base64
 import json
-import unicodedata
 from typing import List, Sequence
 from urllib.parse import quote
 
-from .rules import Finding
+from .rules import Finding, printable
 
 INFO_URI = "https://github.com/calasdan-sketch/portacheck"
 
@@ -31,22 +31,13 @@ RULES = {
 
 
 def safe(s: str, escape_backslash: bool = True) -> str:
-    """Make an untrusted string safe to print on a terminal or CI log.
+    """Make an untrusted string safe to print (see :func:`portacheck.rules.printable`)."""
+    return printable(s, escape_backslash)
 
-    Backslashes are doubled (by default) so a real ``\\u202e`` in a name
-    cannot be confused with an escape portacheck produced."""
-    out = []
-    for c in s:
-        o = ord(c)
-        if 0xDC80 <= o <= 0xDCFF:  # surrogateescape'd raw byte
-            out.append(f"\\x{o - 0xDC00:02x}")
-        elif o == 0x5C and escape_backslash:
-            out.append("\\\\")
-        elif o < 32 or o == 127 or 0x80 <= o < 0xA0 or unicodedata.category(c) in ("Cf", "Cs", "Zl", "Zp"):
-            out.append(f"\\u{o:04x}")
-        else:
-            out.append(c)
-    return "".join(out)
+
+def raw_b64(s: str) -> str:
+    """Base64 of the exact path bytes (undecodable bytes restored), lossless."""
+    return base64.b64encode(s.encode("utf-8", "surrogateescape")).decode("ascii")
 
 
 def _json_safe(s: str) -> str:
@@ -70,7 +61,8 @@ def render_json(findings: Sequence[Finding], root: str, scanned: int) -> str:
         "scanned": scanned,
         "errors": errors,
         "warnings": len(findings) - errors,
-        "findings": [{k: _json_safe(v) for k, v in f.as_dict().items()} for f in findings],
+        "findings": [dict({k: _json_safe(v) for k, v in f.as_dict().items()}, path_raw_b64=raw_b64(f.path))
+                     for f in findings],
     }, indent=2)
 
 
@@ -101,7 +93,7 @@ def render_sarif(findings: Sequence[Finding], version: str) -> str:
             "level": "error" if f.severity == "error" else "warning",
             "message": {"text": _json_safe(f.detail)},
             "locations": [{"physicalLocation": {"artifactLocation": {
-                "uri": quote(_json_safe(f.path), safe="/"), "uriBaseId": "%SRCROOT%"}}}],
+                "uri": quote(f.path.encode("utf-8", "surrogateescape"), safe="/"), "uriBaseId": "%SRCROOT%"}}}],
         })
     doc = {
         "$schema": "https://json.schemastore.org/sarif-2.1.0.json",

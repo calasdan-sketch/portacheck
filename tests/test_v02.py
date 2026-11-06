@@ -84,7 +84,7 @@ def test_with_parents_and_dir_collision_reported_once():
 # --- path length model ---------------------------------------------------
 
 def test_path_length_uses_windows_prefix_and_reports_shallowest():
-    deep = "/".join(["d" * 50] * 4) + "/file.txt"  # 213 chars
+    deep = "/".join(["d" * 60] * 3) + "/" + "f" * 28  # folder 182, file 211 chars
     assert [f for f in scan_paths([deep], prefix_len=40) if f.code == "path_length"] == []
     found = [f for f in scan_paths([deep], prefix_len=50) if f.code == "path_length"]
     assert len(found) == 1 and found[0].path == deep
@@ -228,3 +228,85 @@ def test_walk_with_undecodable_filename(tmp_path, capsys):
     assert data["findings"][0]["code"] == "invalid_encoding"
     assert main([str(tmp_path), "--format", "sarif"]) == 1
     assert json.loads(capsys.readouterr().out)["runs"][0]["results"]
+
+
+# --- panel review fixes (0.2.0, round 2) --------------------------------
+
+def test_reserved_names_match_git_for_windows():
+    # compat/mingw.c is_valid_win32_path: spaces after the device name, then
+    # end / '.' / ':' -> still the device; CONIN$/CONOUT$; LPT0 (isdigit)
+    for n in ("CON .txt", "AUX  .tar.gz", "nul :stream", "PRN ", "CONIN$", "conout$.log",
+              "LPT0", "lpt0.txt", "Com1 .x"):
+        assert "reserved_name" in codes(check_component(n)), n
+    for n in ("COM0", "CON X.txt", "CONINS", "CONIN", "CONOUT", "LPTX", "AUXILIARY", "NULL.md"):
+        assert "reserved_name" not in codes(check_component(n)), n
+
+
+def test_case_clash_inside_folder_not_hidden_by_parent_clash():
+    found = case_collisions(with_parents(["Src/other", "src/Config", "src/config"]))
+    paths = sorted(f.path for f in found)
+    assert paths == ["Src", "src/Config"]
+    # children under *different* clashing parents are not repeated
+    found = case_collisions(with_parents(["Src/a.py", "src/a.py"]))
+    assert [f.path for f in found] == ["Src"]
+
+
+def test_folder_limit_is_248():
+    # folder of 200 + 50 prefix = 250 >= 248 -> warn, though the file is < 260
+    found = [f for f in scan_paths(["d" * 200 + "/f.txt"]) if f.code == "path_length"]
+    assert len(found) == 1 and found[0].path == "d" * 200 and "limit 247" in found[0].detail
+    assert not [f for f in scan_paths(["d" * 197 + "/f.txt"]) if f.code == "path_length"]
+    # a leaf (file) of the same length is still under the 260 file limit
+    assert not [f for f in scan_paths(["d" * 200]) if f.code == "path_length"]
+
+
+def test_readme_prefix_example_length():
+    assert len("C:\\Users\\jane.doe\\source\\repos\\project\\") == 39
+
+
+def test_sarif_uri_and_json_are_byte_exact():
+    import base64
+    name = "bad\udcff\udcfe.txt"  # raw bytes ff fe
+    findings = scan_paths([name])
+    sarif = json.loads(render_sarif(findings, "0"))
+    uris = {r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+            for r in sarif["runs"][0]["results"]}
+    assert uris == {"bad%FF%FE.txt"}
+    from portacheck.output import render_json
+    data = json.loads(render_json(findings, ".", 1))
+    assert base64.b64decode(data["findings"][0]["path_raw_b64"]) == b"bad\xff\xfe.txt"
+    # a real backslash + "xff" is distinguishable from the raw byte
+    other = json.loads(render_json(scan_paths(["bad\\xff\\xfe.txt"]), ".", 1))
+    assert other["findings"][0]["path_raw_b64"] != data["findings"][0]["path_raw_b64"]
+
+
+def test_dotdot_from_stdin_is_not_a_trailing_dot(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"../x/ok.py\0./y.py\0a/./b.py\0")))
+    assert main(["--stdin0"]) == 0
+
+
+def test_cjk_compatibility_ideographs_not_flagged():
+    compat, unified = "\uf900", "\u8c48"  # NFC maps the first to the second
+    assert check_component(compat + ".txt") == []
+    assert unicode_collisions([compat + ".txt", unified + ".txt"]) == []
+    # ordinary NFD is still caught next to a compat ideograph
+    assert codes(check_component(compat + "caf" + NFD_E)) == ["not_nfc"]
+
+
+def test_invalid_utf8_detail_matches_path_display():
+    f = [x for x in check_component("bad\udcff") if x.code == "invalid_encoding"][0]
+    assert "\\xff" in f.detail and "udcff" not in f.detail
+
+
+def test_collision_details_escape_bidi_in_every_format():
+    from portacheck.output import render_json
+    evil = "a\u202eb.txt"
+    findings = scan_paths([evil, "A\u202eB.txt"])
+    cc = [f for f in findings if f.code == "case_collision"]
+    assert cc and "\u202e" not in cc[0].detail and "\\u202e" in cc[0].detail
+    sarif = json.loads(render_sarif(findings, "0"))
+    assert all("\u202e" not in r["message"]["text"] for r in sarif["runs"][0]["results"])
+    data = json.loads(render_json(findings, ".", 2))
+    assert all("\u202e" not in f["detail"] for f in data["findings"])
+    uc = unicode_collisions(["caf" + NFC_E + "\u202e", "caf" + NFD_E + "\u202e"])
+    assert uc and "\u202e" not in uc[0].detail
