@@ -93,12 +93,16 @@ def plan_renames(all_paths: Iterable[str], findings: Sequence[Finding]) -> Tuple
     # every folder implied by the index
     dirs: Set[str] = set()
     for p in list(paths):
+        if len(p) >= 4096:
+            continue  # absurdly deep paths are not renamed by script (and would cost quadratic memory)
         q = _parent(p)
         while q:
             dirs.add(q)
             q = _parent(q)
     used: Dict[str, Counter] = {}
     for p in paths | dirs:
+        if len(p) >= 4096:
+            continue
         used.setdefault(_parent(p), Counter())[windows_fold(mac_nfc(p.rsplit("/", 1)[-1]))] += 1
 
     todo: Dict[str, str] = {}  # path -> reason code

@@ -11,7 +11,7 @@ import hashlib
 import json
 from typing import Iterable, List, Sequence, Set, Tuple
 
-from .rules import Finding
+from .rules import Finding, path_bytes
 
 VERSION = 1
 
@@ -24,8 +24,26 @@ def fingerprint(f: Finding) -> str:
     h = hashlib.sha256()
     h.update(f.code.encode("ascii", "replace"))
     h.update(b"\0")
-    h.update(f.path.encode("utf-8", "surrogateescape"))
+    h.update(path_bytes(f.path))
+    if f.ident:  # only findings that share a code and path carry one: older baselines stay valid
+        h.update(b"\0" + path_bytes(f.ident))
     return h.hexdigest()[:24]
+
+
+def write_atomic(path: str, text: str) -> None:
+    """Write via a temp file in the same folder, so an interrupted run cannot leave half a baseline."""
+    import os
+    tmp = f"{path}.tmp{os.getpid()}"
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def dumps(findings: Iterable[Finding]) -> str:

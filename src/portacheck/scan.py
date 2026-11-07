@@ -6,10 +6,11 @@ import re
 import os
 import subprocess
 from collections import Counter
+from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
-from .rules import (Finding, check_component, dotgit_kind, mac_nfc, printable, show_name,
-                    utf16_len, windows_fold)
+from .rules import (Finding, check_component, dotgit_kind, mac_nfc, path_bytes, printable, show_name,
+                    skeleton, utf16_len, windows_fold)
 
 DEFAULT_SKIP = (".git", "node_modules", ".venv", "venv", "__pycache__", ".tox", ".mypy_cache")
 
@@ -21,6 +22,11 @@ DEFAULT_PREFIX_LEN = 50
 #: Windows MAX_PATH. It counts the terminating NUL, so 259 visible chars is
 #: the longest path that works without long-path support.
 DEFAULT_MAX_PATH = 260
+
+#: macOS's PATH_MAX (sys/syslimits.h) and Linux's (linux/limits.h), in bytes including the NUL. Only the
+#: repo-relative part is measured, so a real checkout is longer still.
+MACOS_PATH_MAX = 1024
+LINUX_PATH_MAX = 4096
 
 #: Folders must leave room for an 8.3 file name: MAX_PATH - 12 = 248.
 DIR_RESERVE = 12
@@ -85,7 +91,7 @@ def _tree(rel_paths: Iterable[str]) -> Tuple[List[str], Dict[str, List[str]]]:
 
 def _collisions(by_dir: Dict[str, List[str]], key: Callable[[str], str], code: str,
                 why: str, skip_if: Callable[[List[str]], bool] = lambda g: False,
-                show: Callable[[str], str] = str) -> List[Finding]:
+                show: Callable[[str], str] = str, severity: str = "error") -> List[Finding]:
     """Siblings (same folder) whose names are the same under ``key``.
 
     Two paths only collide in place when they share the exact parent; a clash
@@ -109,7 +115,7 @@ def _collisions(by_dir: Dict[str, List[str]], key: Callable[[str], str], code: s
             originals = sorted(parent + "/" + n if parent else n for n in sub)
             if skip_if(originals):
                 continue
-            out.append(Finding("error", code, originals[0], why + ": " + ", ".join(map(show, originals)),
+            out.append(Finding(severity, code, originals[0], why + ": " + ", ".join(map(show, originals)),
                                tuple(originals)))
     out.sort(key=lambda f: f.path)
     return out
@@ -161,6 +167,88 @@ def _unicode_from_tree(by_dir: Dict[str, List[str]]) -> List[Finding]:
                        show=_ascii_show)  # escaped, or NFC and NFD forms look identical
 
 
+def _confusable_from_tree(by_dir: Dict[str, List[str]]) -> List[Finding]:
+    by_dir = {d: names for d, names in by_dir.items() if len(names) > 1 and not "".join(names).isascii()}
+    return _collisions(by_dir, skeleton, "confusable_name",
+                       "names are different files but look alike (look-alike letters or compatibility forms)",
+                       skip_if=lambda g: len({windows_fold(mac_nfc(p.rsplit('/', 1)[-1])) for p in g}) == 1,
+                       show=_ascii_show, severity="warn")
+
+
+def _shallowest(over: Dict[str, int]) -> Tuple[List[str], Dict[str, int]]:
+    """(the over-limit paths whose parent is not itself over the limit, count of
+    over-limit paths inside each). Linear: every path remembers its top."""
+    top: Dict[str, str] = {}
+    for rel in over:
+        chain: List[str] = []
+        cur = rel
+        while cur not in top:
+            chain.append(cur)
+            p = _parent(cur)
+            if p in over:
+                cur = p
+            else:
+                break
+        base = top[cur] if cur in top else chain[-1]
+        for c in chain:
+            top[c] = base
+    inside_count: Dict[str, int] = {}
+    for rel, t in top.items():
+        if t != rel:
+            inside_count[t] = inside_count.get(t, 0) + 1
+    return [rel for rel in over if top[rel] == rel], inside_count
+
+
+def _posix_length_findings(paths: Sequence[str], dirs: Set[str]) -> List[Finding]:
+    over: Dict[str, int] = {}
+    for rel in paths:
+        if len(rel) >= 256:  # fewer than 256 characters cannot reach 1024 bytes: skip the encode
+            n = len(path_bytes(rel)) + 1
+            if n >= MACOS_PATH_MAX:
+                over[rel] = n
+    tops, inside_count = _shallowest(over)
+    out = []
+    for rel in tops:
+        inside = inside_count.get(rel, 0)
+        extra = f" (+{inside} path(s) inside it)" if inside else ""
+        kind = "folder" if rel in dirs else "path"
+        out.append(Finding("warn", "path_length_posix", rel,
+                           f"{kind} is {over[rel] - 1} UTF-8 bytes on its own; macOS's PATH_MAX is "
+                           f"{MACOS_PATH_MAX} and Linux's {LINUX_PATH_MAX} (both count the NUL), and the clone "
+                           f"folder comes on top{extra}"))
+    return out
+
+
+#: how many offending components of one huge path are listed (naming each needs a prefix copy of the path)
+_HUGE_COMPONENT_REPORTS = 20
+
+
+def _huge_findings(huge: Sequence[str], on_disk: bool) -> List[Finding]:
+    """Paths of ``LINUX_PATH_MAX`` bytes or more. They cannot be created on Linux or macOS, and
+    folding every prefix of one into the folder tree would cost memory quadratic in its length, so they are
+    checked component by component and kept out of the collision tree."""
+    out: List[Finding] = []
+    for rel in huge:
+        out.append(Finding("error", "path_length_posix", rel,
+                           f"path is {len(path_bytes(rel))} UTF-8 bytes; Linux's PATH_MAX is {LINUX_PATH_MAX} and "
+                           f"macOS's {MACOS_PATH_MAX} (both count the NUL), so it cannot be checked out there "
+                           "(not included in the collision checks)"))
+        verdicts: Dict[str, List[Finding]] = {}
+        end = 0
+        reported = 0
+        for name in rel.split("/"):
+            end += len(name)
+            res = verdicts.get(name)
+            if res is None:
+                res = verdicts[name] = check_component(name, where="", on_disk=on_disk)
+            if res and reported < _HUGE_COMPONENT_REPORTS:
+                reported += 1
+                where = rel[:end]  # the offending component's own path, so a fix script renames the right thing
+                out.extend(Finding(f.severity, f.code, where, f.detail) for f in res)
+            end += 1
+    return out
+
+
 def _length_findings(rel_paths: Sequence[str], max_path: int, prefix_len: int,
                      dirs: Optional[Set[str]] = None) -> List[Finding]:
     # Folders get 12 fewer chars: CreateDirectoryW must leave room for an 8.3
@@ -177,18 +265,10 @@ def _length_findings(rel_paths: Sequence[str], max_path: int, prefix_len: int,
         if total >= (dir_max if rel in dirs else max_path):
             over[rel] = total
     # the shallowest long path is the actionable one; count what sits inside it
-    # (O(n * depth): walk up from each long path to its shallowest long ancestor)
-    inside_count: Dict[str, int] = {}
-    for rel in over:
-        top, p = rel, _parent(rel)
-        while p and p in over:
-            top, p = p, _parent(p)
-        if top != rel:
-            inside_count[top] = inside_count.get(top, 0) + 1
+    tops, inside_count = _shallowest(over)
     out: List[Finding] = []
-    for rel, total in over.items():
-        if _parent(rel) in over:
-            continue
+    for rel in tops:
+        total = over[rel]
         inside = inside_count.get(rel, 0)
         extra = f" (+{inside} path(s) inside it)" if inside else ""
         kind, limit = ("folder", dir_max - 1) if rel in dirs else ("path", max_path - 1)
@@ -322,8 +402,17 @@ def scan_paths(
     index, ``git diff --name-only``) is enough. ``symlinks`` (path -> target or
     None) enables the symlink checks; ``on_disk`` tolerates a real ``.git`` folder.
     """
-    paths, by_dir = _tree(rel_paths)
-    findings: List[Finding] = []
+    huge: List[str] = []
+
+    def bounded() -> Iterable[str]:
+        for rel in rel_paths:
+            if len(rel) >= MACOS_PATH_MAX and len(path_bytes(rel)) >= LINUX_PATH_MAX:
+                huge.append(rel)
+            else:
+                yield rel
+
+    paths, by_dir = _tree(bounded())
+    findings: List[Finding] = _huge_findings(huge, on_disk)
     cache: Dict[str, List[Finding]] = {}
     for parent, names in by_dir.items():
         for name in names:
@@ -333,11 +422,14 @@ def scan_paths(
             if res:
                 rel = parent + "/" + name if parent else name
                 findings.extend(Finding(f.severity, f.code, rel, f.detail) for f in res)
-    findings.extend(_length_findings(paths, max_path, prefix_len, {d for d in by_dir if d}))
+    dirs = {d for d in by_dir if d}
+    findings.extend(_length_findings(paths, max_path, prefix_len, dirs))
+    findings.extend(_posix_length_findings(paths, dirs))
     findings.extend(_collisions(by_dir, windows_fold, "case_collision",
                                 "paths differ only by case and cannot coexist on Windows", show=printable))
     findings.extend(_unicode_from_tree(by_dir))
     findings.extend(_short_from_tree(by_dir))
+    findings.extend(_confusable_from_tree(by_dir))
     if symlinks:
         findings.extend(symlink_findings(paths, symlinks))
     findings.sort(key=lambda f: (f.severity != "error", f.code, f.path))
@@ -345,25 +437,38 @@ def scan_paths(
 
 
 def walk_entries(root: str, skip: Sequence[str] = DEFAULT_SKIP,
-                 follow_symlinks: bool = False) -> Tuple[List[str], Dict[str, Optional[str]]]:
+                 follow_symlinks: bool = False,
+                 errors: Optional[List[str]] = None) -> Tuple[List[str], Dict[str, Optional[str]]]:
     """Every file and directory under ``root`` as '/'-separated relative paths,
-    plus a map of the symlinks among them (path -> target)."""
+    plus a map of the symlinks among them (path -> target).
+
+    Iterative, so a hostile 100,000-level folder tree cannot exhaust the Python
+    stack. Folders that cannot be read are appended to ``errors`` (when given)
+    instead of being silently skipped.
+    """
     out: List[str] = []
     links: Dict[str, Optional[str]] = {}
     seen: Set[Tuple[int, int]] = set()
 
-    def rec(abs_dir: str, rel_dir: str) -> None:
+    def open_dir(abs_dir: str, rel_dir: str):
         try:
             st = os.stat(abs_dir)
             key = (st.st_dev, st.st_ino)
             if key in seen:
-                return  # symlink loop
+                return None  # symlink loop
             seen.add(key)
-            entries = list(os.scandir(abs_dir))
+            return iter(list(os.scandir(abs_dir)))
         except OSError:
-            return
-        for e in entries:
-            rel = rel_dir + e.name if not rel_dir else rel_dir + "/" + e.name
+            if errors is not None:
+                errors.append(rel_dir or ".")
+            return None
+
+    first = open_dir(root, "")
+    stack = [("", root, first)] if first is not None else []
+    while stack:
+        rel_dir, abs_dir, it = stack[-1]
+        for e in it:
+            rel = rel_dir + "/" + e.name if rel_dir else e.name
             islink = e.is_symlink()
             isdir = e.is_dir(follow_symlinks=follow_symlinks)
             if isdir and e.name in skip:
@@ -375,9 +480,12 @@ def walk_entries(root: str, skip: Sequence[str] = DEFAULT_SKIP,
                 except OSError:
                     links[rel] = None
             if isdir:
-                rec(e.path, rel)
-
-    rec(root, "")
+                sub = open_dir(e.path, rel)
+                if sub is not None:
+                    stack.append((rel, e.path, sub))
+                    break  # descend now: same pre-order as a recursive walk
+        else:
+            stack.pop()
     return out, links
 
 
@@ -386,11 +494,24 @@ def walk_paths(root: str, skip: Sequence[str] = DEFAULT_SKIP, follow_symlinks: b
     return walk_entries(root, skip, follow_symlinks)[0]
 
 
+def _git_env() -> Dict[str, str]:
+    env = dict(os.environ)
+    env.update({"GIT_OPTIONAL_LOCKS": "0",      # a read-only scan must not take the index lock
+                "GIT_NO_LAZY_FETCH": "1",       # in a partial clone, never contact the remote (Git 2.44+)
+                "GIT_TERMINAL_PROMPT": "0"})
+    return env
+
+
+#: git settings forced on every call: a hostile repository's own config cannot run its fsmonitor hook
+#: through us, and a repo-level diff.relative cannot hide paths outside the folder we were pointed at.
+_GIT_FLAGS = ["-c", "core.fsmonitor=false", "-c", "diff.relative=false"]
+
+
 def _run_git(root: str, args: Sequence[str], timeout: float, stdin: Optional[bytes] = None) -> bytes:
-    cmd = ["git", "-C", root] + list(args)
+    cmd = ["git", "-C", root] + _GIT_FLAGS + list(args)
     try:
         proc = subprocess.run(cmd, input=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                              timeout=timeout, check=False)
+                              timeout=timeout, check=False, env=_git_env())
     except FileNotFoundError as e:
         raise GitError("git is not installed or not on PATH") from e
     except subprocess.TimeoutExpired as e:
@@ -402,52 +523,120 @@ def _run_git(root: str, args: Sequence[str], timeout: float, stdin: Optional[byt
 
 
 def git_paths(root: str, timeout: float = 120.0) -> List[str]:
-    """Tracked + staged paths from the git index under ``root`` (repo-relative).
+    """Tracked + staged paths of the whole repository that contains ``root`` (repo-relative).
 
     Reads the index, not the disk, so it sees exactly what a Windows clone gets
     — including paths your OS could never create. Raises :class:`GitError`.
     """
-    return decode_nul_list(_run_git(root, ["ls-files", "-z", "--cached", "--full-name"], timeout))
+    return decode_nul_list(_run_git(root, ["ls-files", "-z", "--cached", "--full-name", "--", ":/"], timeout))
+
+
+@dataclass
+class Snapshot:
+    """What a clone of one tree would contain: paths, symlink targets, and the root ``.gitmodules`` bytes."""
+    paths: List[str] = field(default_factory=list)
+    symlinks: Dict[str, Optional[str]] = field(default_factory=dict)
+    #: bytes of the root .gitmodules (at most GITMODULES_MAX + 1), None when there is none
+    gitmodules: Optional[bytes] = None
+
+
+def _read_blobs(root: str, shas: Sequence[str], timeout: float) -> Dict[str, Optional[bytes]]:
+    """Contents of blobs (sha -> bytes, None when the object is missing, e.g. a shallow/partial clone)."""
+    got: Dict[str, Optional[bytes]] = {}
+    uniq = list(dict.fromkeys(shas))
+    if not uniq:
+        return got
+    try:
+        data = _run_git(root, ["cat-file", "--batch"], timeout, stdin=("\n".join(uniq) + "\n").encode("ascii"))
+    except GitError:
+        return {sha: None for sha in uniq}
+    pos = 0
+    for sha in uniq:
+        nl = data.find(b"\n", pos)
+        if nl == -1:
+            got[sha] = None
+            continue
+        header = data[pos:nl].split(b" ")
+        if len(header) != 3 or header[1] != b"blob":
+            got[sha] = None
+            pos = nl + 1
+            continue
+        size = int(header[2])
+        got[sha] = data[nl + 1:nl + 1 + size]
+        pos = nl + 1 + size + 1
+    return got
+
+
+def _gitmodules_prefix(root: str, sha: str, limit: int, timeout: float) -> Optional[bytes]:
+    """The first ``limit`` + 1 bytes of a blob, without loading a huge one into memory."""
+    try:
+        proc = subprocess.Popen(["git", "-C", root] + _GIT_FLAGS + ["cat-file", "blob", sha],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=_git_env())
+    except OSError:
+        return None
+    try:
+        assert proc.stdout is not None
+        data = proc.stdout.read(limit + 1)
+    finally:
+        proc.kill()
+        proc.stdout.close()
+        proc.wait()
+    return data
+
+
+def _snapshot_from(root: str, records: Sequence[Tuple[str, str, str]], timeout: float) -> Snapshot:
+    """records: (mode, sha, path) triples straight from git."""
+    from .content import GITMODULES_MAX
+
+    snap = Snapshot()
+    link_sha: Dict[str, str] = {}
+    gm_sha: Optional[str] = None
+    for mode, sha, p in records:
+        snap.paths.append(p)
+        if mode == "120000":
+            link_sha[p] = sha
+        elif p == ".gitmodules" and mode in ("100644", "100755"):
+            gm_sha = sha
+    blobs = _read_blobs(root, list(link_sha.values()), timeout)
+    for p, sha in link_sha.items():
+        raw = blobs.get(sha)
+        snap.symlinks[p] = None if raw is None else raw.decode("utf-8", "surrogateescape")
+    if gm_sha:
+        snap.gitmodules = _gitmodules_prefix(root, gm_sha, GITMODULES_MAX, timeout)
+    return snap
+
+
+def git_snapshot(root: str, rev: Optional[str] = None, timeout: float = 120.0) -> Snapshot:
+    """The tracked tree of the whole repository containing ``root``: the index, or the tree of commit-ish ``rev``
+    (a branch, tag or hash; nothing is checked out). Raises :class:`GitError`."""
+    records: List[Tuple[str, str, str]] = []
+    if rev is None:
+        raw = _run_git(root, ["ls-files", "-z", "--cached", "--stage", "--full-name", "--", ":/"], timeout)
+        for rec in raw.split(b"\0"):
+            if not rec:
+                continue
+            meta, _, path = rec.partition(b"\t")
+            parts = meta.split(b" ")
+            records.append((parts[0].decode("ascii"), parts[1].decode("ascii"), path.decode("utf-8", "surrogateescape")))
+    else:
+        if rev.startswith("-"):
+            raise GitError(f"refusing revision that looks like an option: {rev!r}")
+        _run_git(root, ["rev-parse", "--verify", "--quiet", rev + "^{tree}"], timeout)
+        raw = _run_git(root, ["ls-tree", "-r", "-z", "--full-tree", rev, "--"], timeout)
+        for rec in raw.split(b"\0"):
+            if not rec:
+                continue
+            meta, _, path = rec.partition(b"\t")
+            parts = meta.split(b" ")  # mode type sha
+            records.append((parts[0].decode("ascii"), parts[2].decode("ascii"), path.decode("utf-8", "surrogateescape")))
+    return _snapshot_from(root, records, timeout)
 
 
 def git_entries(root: str, timeout: float = 120.0) -> Tuple[List[str], Dict[str, Optional[str]]]:
     """Like :func:`git_paths`, plus the tracked symlinks (mode 120000) and their
     targets, read from the index and object store (nothing is checked out)."""
-    raw = _run_git(root, ["ls-files", "-z", "--cached", "--stage", "--full-name"], timeout)
-    paths: List[str] = []
-    link_sha: Dict[str, str] = {}
-    for rec in raw.split(b"\0"):
-        if not rec:
-            continue
-        meta, _, path = rec.partition(b"\t")
-        mode, sha = meta.split(b" ")[0], meta.split(b" ")[1]
-        p = path.decode("utf-8", "surrogateescape")
-        paths.append(p)
-        if mode == b"120000":
-            link_sha[p] = sha.decode("ascii")
-    links: Dict[str, Optional[str]] = {}
-    if link_sha:
-        order = list(link_sha)
-        try:
-            data = _run_git(root, ["cat-file", "--batch"], timeout,
-                            stdin=("\n".join(link_sha[p] for p in order) + "\n").encode("ascii"))
-        except GitError:
-            data = b""
-        pos = 0
-        for p in order:
-            nl = data.find(b"\n", pos)
-            if nl == -1:
-                links[p] = None
-                continue
-            header = data[pos:nl].split(b" ")
-            if len(header) != 3 or header[1] != b"blob":  # missing object, e.g. shallow/partial clone
-                links[p] = None
-                pos = nl + 1
-                continue
-            size = int(header[2])
-            links[p] = data[nl + 1:nl + 1 + size].decode("utf-8", "surrogateescape")
-            pos = nl + 1 + size + 1
-    return paths, links
+    snap = git_snapshot(root, None, timeout)
+    return snap.paths, snap.symlinks
 
 
 def git_added_paths(root: str, ref: str, timeout: float = 120.0) -> List[str]:
@@ -464,6 +653,8 @@ def new_path_set(all_paths: Iterable[str], added_files: Iterable[str]) -> Set[st
     folder is *new* when every file under it is an added one)."""
     total: Counter = Counter()
     for p in all_paths:
+        if len(p) >= LINUX_PATH_MAX:
+            continue  # kept out of the folder tree (see scan_paths)
         parent = _parent(p)
         while parent:
             total[parent] += 1
@@ -471,6 +662,8 @@ def new_path_set(all_paths: Iterable[str], added_files: Iterable[str]) -> Set[st
     added = set(added_files)
     got: Counter = Counter()
     for p in added:
+        if len(p) >= LINUX_PATH_MAX:
+            continue
         parent = _parent(p)
         while parent:
             got[parent] += 1

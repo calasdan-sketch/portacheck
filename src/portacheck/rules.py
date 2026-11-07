@@ -38,12 +38,24 @@ class Finding:
     detail: str
     #: every path involved (collision members); empty for single-path findings
     paths: Tuple[str, ...] = ()
+    #: extra identity for findings that share a code and path (e.g. several
+    #: hazards inside one .gitmodules); part of the baseline fingerprint
+    ident: str = ""
 
     def as_dict(self):
         d = {"severity": self.severity, "code": self.code, "path": self.path, "detail": self.detail}
         if self.paths:
             d["paths"] = list(self.paths)
         return d
+
+
+def path_bytes(s: str) -> bytes:
+    """The exact bytes of a decoded path (undecodable bytes restored). Never raises:
+    a lone surrogate that is not a raw byte (only possible from the Python API) is escaped."""
+    try:
+        return s.encode("utf-8", "surrogateescape")
+    except UnicodeEncodeError:
+        return s.encode("utf-8", "backslashreplace")
 
 
 def utf16_len(s: str) -> int:
@@ -101,6 +113,59 @@ def mac_nfc(s: str) -> str:
             seg.append(c)
     out.append(unicodedata.normalize("NFC", "".join(seg)))
     return "".join(out)
+
+
+# --- look-alike names -----------------------------------------------------------
+#
+# A deliberately small, high-confidence subset of Unicode's confusables.txt
+# (UTS #39): Cyrillic and Greek letters that render like a Latin letter in
+# common fonts. It is not the full table, so a pair outside it is not flagged.
+_CONFUSABLE = {}
+for _src, _dst in (
+        # Cyrillic lower case, then upper case
+        ("\u0430\u0441\u0435\u043e\u0440\u0445\u0443\u0456\u0458\u0455\u04bb\u0501\u051b\u051d",
+         "acceopxyijshdqw"),
+        ("\u0410\u0412\u0415\u041a\u041c\u041d\u041e\u0420\u0421\u0422\u0425\u0406\u0408\u0405",
+         "ABEKMHOPCTXIJS"),
+        # Greek
+        ("\u0391\u0392\u0395\u0396\u0397\u0399\u039a\u039c\u039d\u039f\u03a1\u03a4\u03a5\u03a7"
+         "\u03bf\u03bd",
+         "ABEZHIKMNOPTYXov")):
+    for _a, _b in zip(_src, _dst):
+        _CONFUSABLE[_a] = _b
+_NON_LATIN_LOOKALIKE = frozenset(_CONFUSABLE)
+
+
+def skeleton(name: str) -> str:
+    """Name with compatibility forms (ligatures, full-width) and the look-alike
+    letters above mapped to Latin, then case-folded the Windows way."""
+    if name.isascii():
+        return windows_fold(name)
+    n = unicodedata.normalize("NFKC", name)
+    return windows_fold("".join(_CONFUSABLE.get(c, c) for c in n))
+
+
+def mixes_scripts(name: str) -> bool:
+    """A single word that mixes Latin letters with a Cyrillic/Greek look-alike
+    (``p\u0430ypal``). Words from one script, and Latin next to Greek/Cyrillic
+    in *separate* words, are fine."""
+    if name.isascii() or not (_NON_LATIN_LOOKALIKE & set(name)):
+        return False
+    for word in re.findall(r"[^\W\d_]+", name):
+        has_lookalike = any(c in _NON_LATIN_LOOKALIKE for c in word)
+        has_latin = any(c.isascii() and c.isalpha() for c in word)
+        if has_lookalike and has_latin:
+            return True
+    return False
+
+
+#: files that are tool or OS metadata, not source (matched case-insensitively)
+OS_JUNK = frozenset([".ds_store", "thumbs.db", "desktop.ini", ".appledouble", ".spotlight-v100", ".trashes"])
+
+
+def is_os_junk(name: str) -> bool:
+    low = name.lower()
+    return low in OS_JUNK or (low.startswith("._") and len(low) > 2)
 
 
 def printable(s: str, escape_backslash: bool = True) -> str:
@@ -251,6 +316,8 @@ def check_component(name: str, where: str = "", on_disk: bool = False) -> List[F
     if name[0] not in _META_START and len(name) <= COMPONENT_MAX and _SAFE_ASCII.fullmatch(name):
         i = name.find(".")
         if name[:i if i != -1 else None].rstrip(" ").upper() not in RESERVED:
+            if name[0] in "Tt" and name.lower() == "thumbs.db" or name[0] in "Dd" and name.lower() == "desktop.ini":
+                out.append(_junk_finding(name, where))
             return out
     loc = where or name
     shown = show_name(name)
@@ -302,8 +369,19 @@ def check_component(name: str, where: str = "", on_disk: bool = False) -> List[F
     if n16 > COMPONENT_MAX:
         out.append(Finding("error", "component_too_long", loc,
                            f"component is {n16} UTF-16 units (NTFS limit is {COMPONENT_MAX})"))
+    if is_os_junk(name):
+        out.append(_junk_finding(name, where))
     if ascii_only:
         return out
+    nbytes = len(path_bytes(name)) if n16 <= COMPONENT_MAX else 0
+    if nbytes > COMPONENT_MAX:
+        out.append(Finding("warn", "component_bytes", loc,
+                           f"name is {nbytes} UTF-8 bytes; Linux file systems (ext4, btrfs, XFS: NAME_MAX) allow "
+                           f"{COMPONENT_MAX}, so it cannot be created there although NTFS counts only {n16} UTF-16 units"))
+    if mixes_scripts(name):
+        out.append(Finding("warn", "mixed_script", loc,
+                           f"{shown} mixes Latin letters with Cyrillic/Greek look-alikes inside one word — "
+                           "it can pass for a different name"))
     hidden = sorted({c for c in name if _invisible(c)})
     if hidden:
         out.append(Finding("warn", "invisible_char", loc,
@@ -316,6 +394,12 @@ def check_component(name: str, where: str = "", on_disk: bool = False) -> List[F
                            f"{ascii(name[:80])} is not NFC-normalized (composed form: {ascii(nfc[:80])}); "
                            "macOS and Linux tools can treat the two as different files"))
     return out
+
+
+def _junk_finding(name: str, where: str) -> Finding:
+    return Finding("warn", "os_junk", where or name,
+                   f"{show_name(name)} is operating-system metadata (Finder, Explorer or AppleDouble), not source: "
+                   "usually committed by accident; ignore it in .gitignore")
 
 
 def check_relpath(rel: str, on_disk: bool = False) -> List[Finding]:

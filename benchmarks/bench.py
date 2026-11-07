@@ -123,6 +123,13 @@ def hostile_cases(rnd):
     add("risky symlink", ["lnk", "lnk/inner"], symlinks={"lnk": "elsewhere"})
     for n in ("invoice\u202egpj.exe", "re\u202epdf.txt", "a\u200bb.py", "x\u2066y.js", "doc\ufeff.txt", "t\u200dr.md"):
         add("invisible/bidi (Trojan Source)", ["files/" + n])
+    for n in ("\u3042" * 100, "\u00e9" * 130, "\U0001F600" * 100):
+        add("name > 255 bytes (Linux NAME_MAX)", ["assets/" + n + ".png"])
+    for a, b in (("README.md", "R\u0415ADME.md"), ("file.txt", "\ufb01le.txt"), ("abc.txt", "\uff41\uff42\uff43.txt"),
+                 ("config.yml", "c\u043enfig.yml"), ("main.py", "m\u0430in.py"), ("OPEN.md", "\u039fPEN.md")):
+        add("look-alike names", ["src/" + a, "src/" + b])
+    add("look-alike names", ["src/p\u0430ypal.js"])  # one word mixing Latin and Cyrillic
+    add("look-alike names", ["src/\u03bfauth.js"])
     return cases
 
 
@@ -136,6 +143,9 @@ BENIGN_FIXED = [
     "docs/Config.json", "src/config.json", "tests/fixtures/CON_.txt", "this is fine.txt", "UPPER.TXT", "lower.txt",
     "a/.hidden", "..data/x", "@types/node/index.d.ts", "~tilde/x", "100%/x", "#id/x", "{braces}/x", "a&b.txt",
     "src/test~backup.txt", "src/PROGRA~1.txt", "docs/short~1.md",
+    "i18n/\u039a\u03b1\u03bb\u03ac\u03c2-report.txt", "i18n/\u041f\u0440\u0438\u0432\u0435\u0442.md",   # Greek / Cyrillic only
+    "docs/report-\u041f\u0440\u0438\u0432\u0435\u0442.md", "math/\u03c0R.txt", "i18n/" + "\u3042" * 80 + ".txt",
+    "assets/" + "\u00e9" * 100 + ".png", "src/\u00fcber-caf\u00e9.js",
 ]
 # these pairs are NOT collisions on NTFS/macOS even though they look alike
 BENIGN_PAIRS = [
@@ -147,6 +157,8 @@ BENIGN_PAIRS = [
     ["d/longfilename.txt", "d/LONGFI~1.PNG"],             # different extension: no short-name clash
     ["d/short.txt", "d/SHORT~1.TXT"],                     # 8.3-compliant name has no alias
     ["lib/\u00e9.txt", "lib/e.txt"],
+    ["i18n/\u041f\u0440\u0438\u0432\u0435\u0442.md", "i18n/\u03a0\u03c1\u03bf.md"],  # two different non-Latin words
+    ["a/caf\u00e9.txt", "a/cafe.txt"],
 ]
 
 
@@ -296,9 +308,76 @@ def git_parity(n, seed, scan):
     return tp, fp, fn, tn
 
 
+# ---- .gitmodules vs git fsck ----------------------------------------------------------------------------
+def gitmodules_cases(n, seed):
+    rnd = random.Random(seed)
+    # roughly 2 in 3 values are ordinary, so most files are clean and most hostile ones have one bad field
+    names = ["a", "lib/x", "vendor/some-lib", "a..b", "sub module", "UPPER", "docs/x.y"] * 2 + [
+        "../evil", "a/../b", "x\\\\..\\\\y", "..", "a/..", "../../x"]
+    urls = ["https://h/x.git", "ssh://git@h/x", "../rel", "./sibling", "file:///tmp/x", "git://h/x", "https://h/a%20b"] * 2 + [
+        "-oProxyCommand=id", "./%0a", "git://h/%0ax", "ext::sh -c id", '"-q"', "-", "https://h/%0Ax", "--upload-pack=x"]
+    paths = ["a", "lib/x", "dir/sub", "../up", "a.b", "sub/dir"] * 2 + ["-x", "--help"]
+    updates = [None, None, None, None, "merge", "checkout", "rebase", "none", "!id", "! id"]
+    out = []
+    for _ in range(n):
+        body = ""
+        for _ in range(rnd.randint(1, 3)):
+            u = rnd.choice(updates)
+            body += (f'[submodule "{rnd.choice(names)}"]\n\tpath = {rnd.choice(paths)}\n'
+                     f'\turl = {rnd.choice(urls)}\n' + (f"\tupdate = {u}\n" if u else ""))
+        out.append(body)
+    return out
+
+
+def gitmodules_parity(n, seed, content):
+    """Per random .gitmodules: does `git fsck --strict` complain, and does portacheck report an error?"""
+    tp = fp = fn = tn = 0
+    warn_only = 0
+    with tempfile.TemporaryDirectory(prefix="pcgm-") as td:
+        for i, body in enumerate(gitmodules_cases(n, seed)):
+            d = os.path.join(td, str(i))
+            subprocess.run(["git", "init", "-q", d], check=True)
+            env = dict(os.environ, GIT_AUTHOR_NAME="b", GIT_AUTHOR_EMAIL="b@x.invalid", GIT_COMMITTER_NAME="b",
+                       GIT_COMMITTER_EMAIL="b@x.invalid", GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull)
+            sha = subprocess.run(["git", "-C", d, "hash-object", "-w", "--stdin"], input=body.encode(),
+                                 stdout=subprocess.PIPE, check=True, env=env).stdout.strip().decode()
+            tree = subprocess.run(["git", "-C", d, "mktree"], input=f"100644 blob {sha}\t.gitmodules\n".encode(),
+                                  stdout=subprocess.PIPE, check=True, env=env).stdout.strip().decode()
+            com = subprocess.run(["git", "-C", d, "commit-tree", tree, "-m", "x"], stdout=subprocess.PIPE,
+                                 check=True, env=env).stdout.strip().decode()
+            subprocess.run(["git", "-C", d, "update-ref", "refs/heads/main", com], check=True, env=env)
+            r = subprocess.run(["git", "-C", d, "fsck", "--strict"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               env=env)
+            git_says = b"gitmodules" in r.stdout
+            f = content.gitmodules_findings(body.encode())
+            ours = any(x.severity == "error" or x.code == "submodule_config" for x in f)
+            warn_only += (not ours) and bool(f)
+            tp += git_says and ours
+            fp += ours and not git_says
+            fn += git_says and not ours
+            tn += (not git_says) and not ours
+    return tp, fp, fn, tn, warn_only
+
+
+def robustness(src_dir, depth):
+    """One path with `depth` components in a fresh process: seconds, that process's own peak RSS (MB), exit code."""
+    code = ("import sys, resource; sys.path.insert(0, %r); from portacheck.scan import scan_paths; "
+            "scan_paths(['a/' * %d + 'x']); print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024)"
+            % (src_dir, depth))
+    t = time.perf_counter()
+    r = subprocess.run([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    dt = time.perf_counter() - t
+    try:
+        rss = int(r.stdout.split()[-1])
+    except (ValueError, IndexError):
+        rss = -1
+    return dt, rss, r.returncode
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--old-src", help="directory containing an older portacheck package to compare")
+    ap.add_argument("--prev-src", help="directory containing the previous round's portacheck package")
     ap.add_argument("--files", type=int, default=500_000)
     ap.add_argument("--runs", type=int, default=3)
     ap.add_argument("--seed", type=int, default=20261107)
@@ -313,10 +392,14 @@ def main():
 
     tools = {}
     new = load_portacheck(os.path.join(os.path.dirname(HERE), "src"))
+    import portacheck.content as new_content  # noqa: E402  (the tree under test, before older trees replace it)
     tools["portacheck (this tree)"] = portacheck_detector(new)
     if args.old_src:
         old = load_portacheck(args.old_src)
         tools["portacheck 0.2.0"] = portacheck_detector(old)
+    if args.prev_src:
+        prev = load_portacheck(args.prev_src)
+        tools["portacheck 0.3.0 @ round 2"] = portacheck_detector(prev)
     tools["pre-commit regex (illegal names)"] = precommit_regex
     tools["pre-commit case-conflict"] = precommit_case
     if shutil.which("git"):
@@ -349,6 +432,24 @@ def main():
               f"`.git`-synonym names\n\n| git rejects & portacheck flags | portacheck only | git only | both clean |\n"
               f"|---|---|---|---|\n| {tp} | {fp} | {fn} | {tn} |")
 
+    if shutil.which("git") and args.parity:
+        n = min(args.parity, 400)
+        tp, fp, fn, tn, wo = gitmodules_parity(n, args.seed, new_content)
+        print(f"\n## .gitmodules (ground truth = `git fsck --strict`): {n} random files\n\n"
+              f"| git complains & portacheck errors | portacheck only | git only | both clean |\n|---|---|---|---|\n"
+              f"| {tp} | {fp} | {fn} | {tn} |\n\n(of the {tn} both-clean files, {wo} got a portacheck warning, "
+              f"e.g. the `ext::` transport, which Git's fsck does not check.)")
+
+    if not args.no_speed:
+        print("\n## Robustness: one hostile path with 3,000 components (fresh process each)\n")
+        print("| tool | seconds | peak RSS MB | exit |\n|---|---|---|---|")
+        rb = [("portacheck (this tree)", os.path.join(os.path.dirname(HERE), "src"))]
+        if args.prev_src:
+            rb.append(("portacheck 0.3.0 @ round 2", args.prev_src))
+        for name, src_dir in rb:
+            dt, rss, rc = robustness(src_dir, 3000)
+            print(f"| {name} | {dt:.2f} | {rss} | {rc} |")
+
     if not args.no_speed:
         paths = make_paths(args.files)
         with tempfile.TemporaryDirectory() as td:
@@ -360,6 +461,8 @@ def main():
             print("| tool | median s | best s | peak RSS MB |")
             print("|---|---|---|---|")
             rows = [("portacheck (this tree)", os.path.join(os.path.dirname(HERE), "src"))]
+            if args.prev_src:
+                rows.append(("portacheck 0.3.0 @ round 2", args.prev_src))
             if args.old_src:
                 rows.append(("portacheck 0.2.0", args.old_src))
             for name, src in rows:

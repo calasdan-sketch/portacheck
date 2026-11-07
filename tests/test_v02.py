@@ -38,7 +38,8 @@ def test_component_length_counts_utf16_units():
     emoji = "\U0001F600"
     assert utf16_len(emoji) == 2
     assert "component_too_long" in codes(check_component(emoji * 128))  # 256 units
-    assert check_component(emoji * 127 + "a") == []  # 255 units
+    # 255 units is fine on NTFS (no error), but 509 UTF-8 bytes cannot exist on Linux (NAME_MAX 255)
+    assert codes(check_component(emoji * 127 + "a")) == ["component_bytes"]
 
 
 def test_windows_fold_does_not_equate_sharp_s():

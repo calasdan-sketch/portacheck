@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "portacheck"
 version = "0.3.0"
-description = "Catch file names that break Windows and macOS checkouts: reserved names, invalid characters, case and Unicode collisions, long paths. Zero dependencies."
+description = "Catch file names that break Windows and macOS checkouts, or attack them: reserved names, case and Unicode collisions, .git aliases, hostile .gitmodules, long paths. Zero dependencies."
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
 authors = [{ name = "calasdan-sketch" }]
-keywords = ["windows", "macos", "unicode", "sarif", "pre-commit", "portability", "git", "filenames", "case-sensitivity", "paths", "ci"]
+keywords = ["windows", "macos", "unicode", "sarif", "pre-commit", "portability", "git", "filenames", "case-sensitivity", "paths", "ci", "security", "submodules"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Environment :: Console",
