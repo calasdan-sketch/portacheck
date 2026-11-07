@@ -454,9 +454,10 @@ def walk_entries(root: str, skip: Sequence[str] = DEFAULT_SKIP,
         try:
             st = os.stat(abs_dir)
             key = (st.st_dev, st.st_ino)
-            if key in seen:
-                return None  # symlink loop
-            seen.add(key)
+            if st.st_ino:  # some Windows volumes report inode 0 for everything: then no loop check is possible
+                if key in seen:
+                    return None  # symlink loop
+                seen.add(key)
             return iter(list(os.scandir(abs_dir)))
         except OSError:
             if errors is not None:
@@ -621,7 +622,13 @@ def git_snapshot(root: str, rev: Optional[str] = None, timeout: float = 120.0) -
     else:
         if rev.startswith("-"):
             raise GitError(f"refusing revision that looks like an option: {rev!r}")
-        _run_git(root, ["rev-parse", "--verify", "--quiet", rev + "^{tree}"], timeout)
+        try:
+            _run_git(root, ["rev-parse", "--verify", "--quiet", rev + "^{tree}"], timeout)
+        except GitError as e:
+            if "failed: exit" in str(e):  # --quiet: git prints nothing when the name does not exist
+                raise GitError(f"cannot find revision {rev!r} in this repository (is it fetched? "
+                               "in CI, fetch it first, for example with fetch-depth: 0)") from e
+            raise
         raw = _run_git(root, ["ls-tree", "-r", "-z", "--full-tree", rev, "--"], timeout)
         for rec in raw.split(b"\0"):
             if not rec:

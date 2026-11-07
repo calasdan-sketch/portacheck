@@ -119,6 +119,8 @@ def parse_toml_subset(text: str, tables: Tuple[str, ...]) -> Dict[str, Any]:
             continue
         m = re.fullmatch(r"\[\s*([A-Za-z0-9_.-]+)\s*\]", line)
         if m or line.startswith("["):
+            if not m and not line.startswith("[[") and (in_table or re.fullmatch(r"\[[A-Za-z0-9_.\-\s]*", line)):
+                raise ConfigError(f"cannot read table header {raw.strip()!r}")  # tomllib rejects it too
             if wanted is not None and in_table:
                 break
             name = m.group(1) if m else ""
@@ -133,6 +135,8 @@ def parse_toml_subset(text: str, tables: Tuple[str, ...]) -> Dict[str, Any]:
         k, v = k.strip(), v.strip()
         if not eq or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", k):
             raise ConfigError(f"cannot read line {raw.strip()!r}")
+        if k in out:
+            raise ConfigError(f"duplicate setting {k!r}")  # tomllib rejects it too
         if v.startswith("["):
             if "]" in v:
                 out[k] = _split_array(v[1:v.rindex("]")])
@@ -182,11 +186,11 @@ def load(path: str, trusted: bool) -> Config:
         with open(path, "rb") as fh:
             data = fh.read(1_000_001)
     except OSError as e:
-        raise ConfigError(f"cannot read {path}: {e}") from e
+        raise ConfigError(f"cannot read {path}: {e.strerror or e}") from e
     if len(data) > 1_000_000:
         raise ConfigError(f"{path} is larger than 1 MB")
     try:
-        text = data.decode("utf-8")
+        text = data.decode("utf-8-sig")  # Notepad on Windows may add a byte-order mark
     except UnicodeDecodeError as e:
         raise ConfigError(f"{path} is not UTF-8") from e
     return parse(path, text, trusted)

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import codecs
+import errno
 import fnmatch
 import os
 import sys
@@ -25,6 +27,24 @@ def _positive(v: str) -> int:
     return n
 
 
+def _max_path(v: str) -> int:
+    n = int(v)
+    if n < 2:  # 1 would leave no room for any name; 0 or less makes every path "too long"
+        raise argparse.ArgumentTypeError("must be >= 2 (Windows MAX_PATH is 260)")
+    return n
+
+
+def _ascii_fallback(err: UnicodeError):
+    """Console encoding (cp437, cp1252, ASCII) cannot show a character: use a plain look-alike or an escape."""
+    bad = err.object[err.start:err.end]  # type: ignore[attr-defined]
+    table = {"\u2014": "-", "\u2013": "-", "\u2192": "->", "\u2026": "...", "\u00d7": "x"}
+    out = "".join(table.get(c) or c.encode("ascii", "backslashreplace").decode("ascii") for c in bad)
+    return out, err.end  # type: ignore[attr-defined]
+
+
+codecs.register_error("portacheck_console", _ascii_fallback)
+
+
 def _err(msg: str) -> None:
     print(f"portacheck: {msg}", file=sys.stderr)
 
@@ -32,7 +52,12 @@ def _err(msg: str) -> None:
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="portacheck",
-        description="Find repo paths that break Windows checkouts before Windows does.",
+        description="Find repo paths that break Windows and macOS checkouts, or attack them, before a clone does.",
+        epilog="exit codes: 0 clean, 1 findings (warnings too with --strict), 2 the scan could not be done "
+               "(not a directory or git repo, git missing, nothing to scan, bad settings or baseline file).\n"
+               "examples:  portacheck --git   |   portacheck --rev origin/some-branch   |   "
+               "portacheck --explain case_collision",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ap.add_argument("path", nargs="?", default=".", help="directory to scan (default: .)")
     src = ap.add_mutually_exclusive_group()
@@ -42,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
                      help="scan the tree of a commit, branch or tag without checking it out (e.g. a PR head)")
     src.add_argument("--stdin0", action="store_true",
                      help="read NUL-separated repo-relative paths from stdin (e.g. git ls-files -z)")
-    ap.add_argument("--max-path", type=_positive, default=None,
+    ap.add_argument("--max-path", type=_max_path, default=None,
                     help=f"Windows MAX_PATH, counting the terminating NUL (default: {DEFAULT_MAX_PATH})")
     ap.add_argument("--prefix-len", type=_positive, default=None,
                     help="assumed length of the Windows folder the repo is cloned into, with trailing "
@@ -79,16 +104,26 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         return _main(argv)
     except BrokenPipeError:
-        try:
-            sys.stdout = open(os.devnull, "w")
-        except OSError:
-            pass
+        return _quiet_exit()
+    except OSError as e:
+        if e.errno in (errno.EPIPE, errno.EINVAL) and os.name == "nt":  # Windows reports a closed pipe this way
+            return _quiet_exit()
+        _err(f"internal error (OSError): {safe(str(e)[:300], False)} — nothing was verified, failing closed")
         return 2
     except KeyboardInterrupt:
         return 130
     except Exception as e:  # never let a crash look like "findings" (exit 1) or like a pass
         _err(f"internal error ({type(e).__name__}): {safe(str(e)[:300], False)} — nothing was verified, failing closed")
         return 2
+
+
+def _quiet_exit() -> int:
+    """The reader of our output went away (for example `| head`): stop quietly, without a traceback."""
+    try:
+        sys.stdout = open(os.devnull, "w")
+    except OSError:
+        pass
+    return 2
 
 
 def _gitmodules_from_disk(root: str) -> Optional[bytes]:
@@ -150,16 +185,20 @@ def _main(argv: Optional[List[str]]) -> int:
     base = None
     if args.baseline:
         try:
-            with open(args.baseline, encoding="utf-8") as fh:
+            with open(args.baseline, encoding="utf-8-sig") as fh:
                 base = bl.loads(fh.read())
         except (OSError, UnicodeDecodeError, bl.BaselineError) as e:
-            _err(f"cannot use baseline {safe(args.baseline)}: {safe(str(e), False)}")
+            _err(f"cannot use baseline {safe(args.baseline)}: {safe(getattr(e, 'strerror', None) or str(e), False)}")
             return 2
     for stream in (sys.stdout, sys.stderr):  # never crash on a cp1252 console
         try:
-            stream.reconfigure(errors="backslashreplace")  # type: ignore[attr-defined]
+            stream.reconfigure(errors="portacheck_console")  # type: ignore[attr-defined]
         except (AttributeError, ValueError):
             pass
+    try:  # Windows would write \r\n: that breaks a `--format gitmv > fix.sh` script and hashes of the output
+        sys.stdout.reconfigure(newline="\n")  # type: ignore[attr-defined]
+    except (AttributeError, ValueError, OSError):
+        pass
 
     symlinks = None
     on_disk = False
@@ -235,7 +274,7 @@ def _main(argv: Optional[List[str]]) -> int:
         try:
             bl.write_atomic(args.write_baseline, bl.dumps(findings))
         except OSError as e:
-            _err(f"cannot write baseline: {safe(str(e), False)}")
+            _err(f"cannot write baseline {safe(args.write_baseline)}: {safe(e.strerror or str(e), False)}")
             return 2
         _err(f"wrote {len(findings)} finding(s) to {safe(args.write_baseline)}")
         return 0

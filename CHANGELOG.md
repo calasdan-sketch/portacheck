@@ -2,6 +2,14 @@
 
 ## 0.3.0 — unreleased
 
+### Added and fixed in the fourth review round ("what a stranger gets")
+- **Packaging**: the wheel and sdist now ship `py.typed`, project URLs, Python 3.9-3.13 / OS / Security / Typed classifiers; the sdist also carries the changelog, tests, benchmarks and the pre-commit hook file. Tests run from a fresh checkout without installing first (`pytest` finds `src/`); a test checks that the version agrees across `pyproject.toml`, `__version__`, this changelog and the README.
+- **Settings file on Python 3.9/3.10** (which parse it with a small built-in reader): a broken table header such as `[portacheck` was silently ignored, so the file did nothing and the run passed; it is now a setup error (exit 2), as on 3.11+. A key written twice is rejected the same way tomllib does.
+- `--max-path` below 2 is refused (0 made every path "too long" with a limit of -1).
+- Windows: `--format gitmv > fix.sh` no longer writes `\r\n` line endings (the script would not run under `sh`); old console code pages (cp437, cp1252) show `-` for the long dash and `\uXXXX` for characters they cannot draw instead of crashing or printing `?`; a baseline or settings file saved by Notepad with a byte-order mark is read; a closed pipe exits quietly; a volume that reports inode 0 for every folder no longer makes the walk skip all but the first folder. Review-by-reading only: not run on Windows.
+- Plain-English errors: `--rev` of an unknown name says "cannot find revision ... (is it fetched?)" instead of "git rev-parse failed: exit 1"; file errors no longer show `[Errno 2]`.
+- `--help` lists the exit codes. CI also lints (real errors only) and smoke-tests the *built wheel* in a clean virtual environment, including a check that the fix script has no carriage returns.
+
 ### Added in the third review round
 - **`.gitmodules` checks** (`submodule_name`, `submodule_url`, `submodule_path`, `submodule_update`, `submodule_config`): the root `.gitmodules` is read from the index, a commit or the disk and checked for the tricks Git's own `git fsck` rejects (`..` in a name, a url starting with `-` or containing an encoded newline, a path starting with `-`, `update = !command`, a file over 1 MiB). Tested against `git fsck --strict` (Git 2.43) on a table of cases and on 400 random files in the benchmark. `ext::` urls and unparsable lines are warnings.
 - `--rev REF`: scan the tree of a commit, branch or tag without checking it out (vet a PR head). `--git` now scans the **whole** repository even when pointed at a sub-folder (it used to list only that folder's files, so a `Docs/` vs `docs/` clash elsewhere was missed).

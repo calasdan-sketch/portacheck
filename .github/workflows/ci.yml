@@ -24,10 +24,21 @@ jobs:
         run: pytest -q
       - name: CLI smoke
         run: portacheck --version
+      - name: Lint (real errors only)
+        run: pip install ruff && ruff check src tests
       - name: Build
         run: python -m build
       - name: Twine check
         run: twine check dist/*
+      - name: Smoke test the built wheel in a clean virtual environment
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/clean"
+          BIN="$RUNNER_TEMP/clean/bin"; [ -d "$BIN" ] || BIN="$RUNNER_TEMP/clean/Scripts"
+          "$BIN/pip" install dist/*.whl
+          "$BIN/portacheck" --version
+          printf 'docs/CON.md\0' | "$BIN/portacheck" --stdin0 --format gitmv > "$RUNNER_TEMP/fix.sh" || test $? -eq 1
+          ! grep -q $'\r' "$RUNNER_TEMP/fix.sh"
       - name: Self-scan (portability)
         run: |
           portacheck . --strict

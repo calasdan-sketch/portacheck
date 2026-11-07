@@ -1,0 +1,4 @@
+include CHANGELOG.md LICENSE README.md .pre-commit-hooks.yaml
+recursive-include tests *.py
+recursive-include benchmarks *.py *.md
+global-exclude __pycache__ *.py[cod]

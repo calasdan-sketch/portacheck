@@ -3,7 +3,7 @@
 **Catch file names that break Windows and macOS checkouts, or that attack them, in CI on Linux, before a teammate hits them.** Zero dependencies, one command, exits non-zero when something would break, and prints the `git mv` commands that fix it. It also reads a repository's `.gitmodules` for the submodule tricks Git itself refuses, and can vet a branch or pull-request head without checking it out.
 
 ```console
-$ pip install portacheck    # 0.3.0 is unreleased: until then, pip install git+https://github.com/calasdan-sketch/portacheck
+$ pip install portacheck    # PyPI still has 0.1.0 (checked 2026-11-07), which has no --git; this README is for 0.3.0. Until it is released: pip install git+https://github.com/calasdan-sketch/portacheck
 $ portacheck --git          # scan everything tracked in this repo
 $ portacheck --git --format gitmv > fix.sh   # review it, then run it: git mv commands for what a rename can fix
 $ portacheck --rev origin/some-branch       # vet a branch, tag or PR head straight from the object store, no checkout
@@ -112,7 +112,7 @@ pre-commit:
 
 ```yaml
 - repo: https://github.com/calasdan-sketch/portacheck
-  rev: v0.3.0   # use the tag you want (0.3.0 is unreleased)
+  rev: v0.3.0   # the tag does not exist yet: it is created when 0.3.0 is released
   hooks:
     - id: portacheck
 ```
@@ -165,6 +165,8 @@ pre-commit:
 
 The machine was shared and loaded while these ran, so only the ratios mean anything: this round did not change the speed (an in-process comparison alternating the two trees was within noise), and the earlier run of the same table on a quieter machine gave 2.4 s for 0.3.0 and 6.9 s for 0.2.0. A single hostile path with 3,000 components (6,001 bytes) takes 0.07 s now and took 9.2 s before this round; one with 200,000 components was killed by the operating system for lack of memory before this round and is now reported in milliseconds.
 
+Round 4 re-ran the benchmark against the round-3 tree on a quieter machine: accuracy identical, 4.15 s vs 4.32 s median for 500,000 files, 250 MB both (no speed change; see `benchmarks/RESULTS.md`).
+
 Real repository check (measured in the previous round, not repeated since): the Linux kernel tree (97,360 files, shallow clone, `git ls-tree` piped to `--stdin0`) scans in 0.4 s (0.9 s on 0.2.0) with the same 13 case collisions on both versions (such as `xt_CONNMARK.h` / `xt_connmark.h`) and no new false positives.
 
 ## How it compares
@@ -202,7 +204,7 @@ Only things stated in each project's own docs are listed (read 2026-11-07); "—
 - **`.gitmodules`:** only the root file, and only the rules listed above, compared with the `git fsck` of Git 2.43 (the only version available here); newer Git versions may check more. The submodules' own contents are not read. A byte-order mark is stripped before parsing (Git's fsck reports such a file as unparsable; portacheck still checks it).
 - **Byte limits:** `NAME_MAX` 255 bytes on Linux and `PATH_MAX` 4096 are Linux facts; macOS's 1024-byte `PATH_MAX` is from `sys/syslimits.h` and the APFS name limit is not verified. Only the repo-relative part of a path is measured. Paths of 4,096+ bytes are reported but left out of the collision checks (they would cost memory quadratic in their length).
 - **Trust:** a baseline or settings file stored in the repository you scan is written by that repository's authors. Take them from the base branch when checking pull requests from forks (see Settings file).
-- **Tested on:** Python 3.11, 3.12 and 3.13 and Git 2.43 on Linux. Python 3.9 (the declared minimum) and Windows/macOS runners were not available here; the code parses as Python 3.9 grammar and CI covers 3.9 and Windows.
+- **Tested on:** Linux with Git 2.43: the test suite on Python 3.9 and 3.13 (172 tests), and the built wheel installed into clean virtual environments on 3.9 and 3.13. 3.10-3.12 are not run this round. **Never run on Windows or macOS.** Windows behaviour was reviewed by reading the code (path separators, line endings, console encodings, `os.replace`, closed pipes, volumes that report inode 0) and the Windows-shaped parts are simulated in tests; `.github/workflows/ci.yml` runs the suite on Windows, and that run has not been seen yet. Paths longer than 259 characters in a *disk walk* on Windows may fail to open (`--git` and `--rev` do not walk the disk); the run then exits 2 rather than passing.
 - **Memory:** about 0.45 KB per tracked path (218 MB for 500,000 files).
 - Everything printed is escaped (control, bidi and zero-width characters, raw bytes), so a hostile file name can't rewrite your terminal or CI log.
 

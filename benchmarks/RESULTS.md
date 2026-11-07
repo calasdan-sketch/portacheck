@@ -58,3 +58,14 @@ Recall by hazard class (caught / cases):
 | portacheck 0.2.0 | 27.44 | 26.41 | 405 |
 | pre-commit regex (regex only, no Python start-up) | 20.24 | - | - |
 | pre-commit case-conflict (set logic only) | 6.21 | - | - |
+
+## Round 4 re-run (vs the round-3 tree; Linux, Git 2.43, Python 3.13, a quieter machine than the table above)
+
+Accuracy unchanged: 1.000 / 1.000 / 1.000 on the 288 + 2,071 corpus; Git `.git`-synonym parity 319 / 0 / 0 / 2,671; `.gitmodules` vs `git fsck --strict` 332 / 0 / 0 / 68.
+
+| 500,000 tracked files, median of 3 | median s | best s | peak RSS MB |
+|---|---|---|---|
+| round 4 tree | 4.15 | 2.90 | 250 |
+| round 3 tree | 4.32 | 3.93 | 250 |
+
+Hostile 3,000-component path: 0.11 s, 22 MB, both trees. The two trees differ by noise only: round 4 did not touch the scanning code.
