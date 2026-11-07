@@ -93,7 +93,10 @@ def test_symlinks_not_followed_by_default(tmp_path):
         link.symlink_to(target, target_is_directory=True)
     except OSError:
         return  # symlinks unavailable (e.g. developer mode off) — nothing to test
-    assert scan_tree(str(tmp_path)) == []
+    # not followed (nothing reported for link/a.txt); the link itself is a 0.3 `symlink` warning
+    found = scan_tree(str(tmp_path))
+    assert {f.path for f in found} == {"link"}
+    assert {f.code for f in found} == {"symlink", "symlink_escape"}  # the target path is absolute
 
 
 def test_cli_exit_codes_and_json(tmp_path, capsys):

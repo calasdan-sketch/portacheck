@@ -8,9 +8,11 @@ import sys
 from typing import List
 
 from . import __version__
-from .output import render_github, render_json, render_sarif, render_text, safe
-from .scan import (DEFAULT_MAX_PATH, DEFAULT_PREFIX_LEN, DEFAULT_SKIP, GitError,
-                   decode_nul_list, git_paths, scan_paths, walk_paths)
+from . import baseline as bl
+from .fix import render_gitmv
+from .output import RULES, render_github, render_json, render_sarif, render_text, safe
+from .scan import (DEFAULT_MAX_PATH, DEFAULT_PREFIX_LEN, DEFAULT_SKIP, GitError, decode_nul_list,
+                   git_added_paths, git_entries, new_path_set, scan_paths, walk_entries)
 
 
 def _positive(v: str) -> int:
@@ -40,20 +42,51 @@ def main(argv: List[str] | None = None) -> int:
                     + ", ".join(DEFAULT_SKIP) + ")")
     ap.add_argument("--ignore", action="append", default=[], metavar="GLOB",
                     help="suppress findings whose path matches this glob, e.g. 'tests/fixtures/*' (repeatable)")
+    ap.add_argument("--disable", action="append", default=[], metavar="CODE",
+                    help="turn a check off by code, e.g. --disable symlink (repeatable; see --list-codes)")
+    ap.add_argument("--list-codes", action="store_true", help="print every finding code and exit")
+    ap.add_argument("--baseline", metavar="FILE", help="only report findings that are not in this baseline file")
+    ap.add_argument("--write-baseline", metavar="FILE",
+                    help="write today's findings to FILE as a baseline and exit 0")
+    ap.add_argument("--new-since", metavar="REF",
+                    help="with --git: only report findings on paths added since this git ref "
+                         "(collisions with older files are still found)")
     ap.add_argument("--strict", action="store_true", help="warnings also fail the run")
-    ap.add_argument("--format", choices=["text", "json", "github", "sarif"], default="text")
+    ap.add_argument("--format", choices=["text", "json", "github", "sarif", "gitmv"], default="text")
     ap.add_argument("--json", action="store_true", help="same as --format json")
     ap.add_argument("--allow-empty", action="store_true",
                     help="exit 0 when there is nothing to scan (default: exit 2, so a broken checkout cannot pass)")
     ap.add_argument("--version", action="version", version=f"portacheck {__version__}")
     args = ap.parse_args(argv)
     fmt = "json" if args.json else args.format
+    if args.list_codes:
+        for code, desc in RULES.items():
+            print(f"{code:22} {desc}")
+        return 0
+    unknown = [c for c in args.disable if c not in RULES]
+    if unknown:
+        print(f"portacheck: unknown code(s) for --disable: {safe(', '.join(unknown))} (see --list-codes)",
+              file=sys.stderr)
+        return 2
+    if args.new_since and not args.git:
+        print("portacheck: --new-since needs --git", file=sys.stderr)
+        return 2
+    base = None
+    if args.baseline:
+        try:
+            with open(args.baseline, encoding="utf-8") as fh:
+                base = bl.loads(fh.read())
+        except (OSError, bl.BaselineError) as e:
+            print(f"portacheck: cannot use baseline {safe(args.baseline)}: {safe(str(e), False)}", file=sys.stderr)
+            return 2
     for stream in (sys.stdout, sys.stderr):  # never crash on a cp1252 console
         try:
             stream.reconfigure(errors="backslashreplace")  # type: ignore[attr-defined]
         except (AttributeError, ValueError):
             pass
 
+    symlinks = None
+    on_disk = False
     if args.stdin0:
         paths = decode_nul_list(sys.stdin.buffer.read())
         root = "<stdin>"
@@ -64,23 +97,49 @@ def main(argv: List[str] | None = None) -> int:
         root = os.path.abspath(args.path)
         if args.git:
             try:
-                paths = git_paths(args.path)
+                paths, symlinks = git_entries(args.path)
             except GitError as e:
                 print(f"portacheck: {safe(str(e), False)}", file=sys.stderr)
                 return 2
         else:
             skip = tuple(args.skip) if args.skip is not None else DEFAULT_SKIP
-            paths = walk_paths(args.path, skip=skip)
+            paths, symlinks = walk_entries(args.path, skip=skip)
+            on_disk = True
 
     if not paths and not args.allow_empty:
         print("portacheck: nothing to scan (no paths found) — refusing to pass; "
               "use --allow-empty if that is expected", file=sys.stderr)
         return 2
 
-    findings = scan_paths(paths, max_path=args.max_path, prefix_len=args.prefix_len)
+    findings = scan_paths(paths, max_path=args.max_path, prefix_len=args.prefix_len,
+                          symlinks=symlinks, on_disk=on_disk)
+    if args.disable:
+        findings = [f for f in findings if f.code not in args.disable]
+    if args.new_since:
+        try:
+            fresh = new_path_set(paths, git_added_paths(args.path, args.new_since))
+        except GitError as e:
+            print(f"portacheck: {safe(str(e), False)}", file=sys.stderr)
+            return 2
+        findings = [f for f in findings if any(p in fresh for p in (f.paths or (f.path,)))]
     if args.ignore:
         findings = [f for f in findings
                     if not any(fnmatch.fnmatchcase(f.path, g) for g in args.ignore)]
+    if args.write_baseline:
+        try:
+            with open(args.write_baseline, "w", encoding="utf-8") as fh:
+                fh.write(bl.dumps(findings))
+        except OSError as e:
+            print(f"portacheck: cannot write baseline: {safe(str(e), False)}", file=sys.stderr)
+            return 2
+        print(f"portacheck: wrote {len(findings)} finding(s) to {safe(args.write_baseline)}", file=sys.stderr)
+        return 0
+    if base is not None:
+        findings, suppressed, stale = bl.apply(findings, base)
+        msg = f"portacheck: baseline hid {suppressed} existing finding(s)"
+        if stale:
+            msg += f"; {stale} baseline entr{'y' if stale == 1 else 'ies'} no longer match (regenerate it)"
+        print(msg, file=sys.stderr)
     errors = [f for f in findings if f.severity == "error"]
     warns = [f for f in findings if f.severity == "warn"]
 
@@ -88,6 +147,8 @@ def main(argv: List[str] | None = None) -> int:
         print(render_json(findings, root, len(paths)))
     elif fmt == "sarif":
         print(render_sarif(findings, __version__))
+    elif fmt == "gitmv":
+        print(render_gitmv(paths, findings))
     elif fmt == "github":
         out = render_github(findings)
         if out:

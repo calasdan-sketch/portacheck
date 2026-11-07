@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.0 — unreleased
+
+### Added
+- **Git-metadata guard** (`git_dir_alias`, `git_meta_alias`): ports Git's own `is_ntfs_dotgit*` / `is_hfs_dotgit*` predicates. Catches `.git` reached as `.git . .`, `git~1`, `.git::$INDEX_ALLOCATION`, HFS+-ignorable characters, in any folder, plus forged spellings of `.gitmodules`, `.gitattributes`, `.gitignore`, `.mailmap` (including `gi7eba~1`-style hash short names). Cross-checked against a real Git in the tests and in the benchmark (zero disagreements on 3,000 random names).
+- **8.3 short-name collisions** (`short_name_collision`): `longfilename.txt` beside `LONGFI~1.TXT`.
+- **Symlink analysis** from the git index (`git ls-files --stage` + `cat-file --batch`) or the disk: `symlink`, `symlink_meta`, `symlink_traversal`, `symlink_escape`, `symlink_backslash`.
+- `--format gitmv`: reviewable `git mv` fix script (display-safe quoting, deepest first, never renames Git-metadata names).
+- `--baseline FILE` / `--write-baseline FILE`, `--new-since REF` (index vs a base ref, with new-folder detection), `--disable CODE`, `--list-codes`.
+- SARIF: `partialFingerprints` and `relatedLocations` for collisions. JSON: `paths` lists every member of a collision.
+- `benchmarks/bench.py` and committed `benchmarks/RESULTS.md`: accuracy on a generated hostile/benign corpus against pre-commit-hooks and Git, a Git-parity fuzz, and a 500,000-file speed test. Tests gate the corpus (no false positives, all hostile cases caught).
+- Python API: `git_entries()`, `short_name_collisions()`; `scan_paths(..., symlinks=, on_disk=)`; `Finding.paths`.
+
+### Changed (behaviour)
+- **Tracked/on-disk symlinks now produce a `symlink` warning** (and `symlink_escape` for absolute or out-of-repo targets). `--strict` runs on repos with symlinks will start failing: use `--disable symlink` (and `--disable symlink_escape`) to restore the old result.
+- A path component that is `.git` (or any alias) in the git index or a path list is an error. A real `.git` folder in a disk walk is still ignored.
+- Collision detection groups siblings per folder instead of folding every full path; results are the same, 2.9x faster on 500,000 files (6.9 s to 2.4 s) and about half the memory.
+
 ## 0.2.0 — unreleased
 
 ### Added

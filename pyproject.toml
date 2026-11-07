@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "portacheck"
-version = "0.2.0"
+version = "0.3.0"
 description = "Catch file names that break Windows and macOS checkouts: reserved names, invalid characters, case and Unicode collisions, long paths. Zero dependencies."
 readme = "README.md"
 requires-python = ">=3.9"

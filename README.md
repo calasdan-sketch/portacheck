@@ -1,10 +1,11 @@
 # portacheck
 
-**Catch file names that break Windows and macOS checkouts, in CI on Linux, before a teammate hits them.** Zero dependencies, one command, exits non-zero when something would break.
+**Catch file names that break Windows and macOS checkouts, or that attack them, in CI on Linux, before a teammate hits them.** Zero dependencies, one command, exits non-zero when something would break, and prints the `git mv` commands that fix it.
 
 ```console
-$ pip install portacheck
+$ pip install portacheck    # 0.3.0 is unreleased: until then, pip install git+https://github.com/calasdan-sketch/portacheck
 $ portacheck --git          # scan everything tracked in this repo
+$ portacheck --git --format gitmv > fix.sh   # review it, then run it: git mv commands for what a rename can fix
 ```
 
 ## What it catches
@@ -19,6 +20,12 @@ $ portacheck --git          # scan everything tracked in this repo
 | `component_too_long` | error | a 256-char file name | NTFS allows 255 UTF-16 units per name |
 | `invalid_encoding` | error | a name that is not valid UTF-8 | Git for Windows cannot reproduce it |
 | `path_length` | warn | deep `node_modules`-style trees | over 259 chars once cloned into a typical Windows folder |
+| `git_dir_alias` | error | `git~1/hooks/post-checkout`, `.git . ./x`, `.git::$INDEX_ALLOCATION/x`, `.g<ZWNJ>it/x` | on Windows/macOS these resolve to the repo's own `.git`; a checkout through one can overwrite `.git/hooks` and run code (Git itself refuses them since [CVE-2014-9390](https://nvd.nist.gov/vuln/detail/CVE-2014-9390); portacheck catches them in the tree *before* a clone does) |
+| `git_meta_alias` | error / warn | `.GitModules`, `GITMOD~1`, `gi7eba~1`, `.gitmodules ` | non-canonical spellings of `.gitmodules` / `.gitattributes` (error) or `.gitignore` / `.mailmap` (warn) that Git reads as the real file on case- or alias-insensitive filesystems |
+| `short_name_collision` | error | `longfilename.txt` + `LONGFI~1.TXT` | NTFS gives long names a hidden 8.3 alias; a tracked file that *is* that alias clashes with it (when short names are enabled) |
+| `symlink` | warn | any tracked symlink | on Windows it needs Developer Mode/admin plus `core.symlinks=true`; otherwise [Git checks it out as a small text file](https://git-scm.com/docs/git-config) |
+| `symlink_meta` / `symlink_traversal` | error | symlink named `.gitmodules`; `lnk/inner` below tracked symlink `lnk` | a link where Git expects a file, or a path written through a link, redirects the checkout |
+| `symlink_escape` / `symlink_backslash` | warn | target `../../etc/passwd`, `/abs`, `C:\x`, `a\b` | link points outside the repo or uses a backslash separator |
 | `invisible_char` | warn | `invoice\u202Egpj.exe` | bidi/zero-width characters make a name display as something else |
 | `not_nfc` | warn | `café.png` in decomposed form | macOS/Linux tools may treat it as a different file |
 
@@ -46,6 +53,16 @@ Exit codes: `0` clean, `1` findings (warnings too with `--strict`), `2` setup pr
 | disk walk (default) | `portacheck [dir]` | every file/folder on disk; skips `.git`, `node_modules`, virtualenvs, caches (override with repeated `--skip`) |
 | stdin | `git diff --name-only -z --diff-filter=d main... \| portacheck --stdin0` | any NUL-separated list of `/`-separated repo-relative paths (`--diff-filter=d` drops deleted files). A diff only sees changed paths, so it **cannot catch a collision with a file that did not change** — use `--git` for that |
 
+## Adopt it on a repo that already has findings
+
+```console
+$ portacheck --git --write-baseline .portacheck-baseline.json      # record today's debt, exit 0
+$ portacheck --git --baseline .portacheck-baseline.json --strict   # fail only on NEW findings
+$ portacheck --git --new-since origin/main --strict                # only paths added since the base branch
+```
+
+A baseline entry is the finding code plus the exact bytes of the path, so rewording a message never resurrects old debt. A malformed or missing baseline file is a setup error (exit 2), never a silent pass. `--new-since REF` still finds a new file that collides with an old one, but does not blame a pull request for names that were already there. `--disable CODE` turns a check off (`--list-codes` shows them), e.g. `--disable symlink` for a repo that needs links.
+
 ## CI
 
 GitHub Actions with inline PR annotations:
@@ -69,7 +86,7 @@ pre-commit:
 
 ```yaml
 - repo: https://github.com/calasdan-sketch/portacheck
-  rev: v0.2.0   # use the tag you want
+  rev: v0.3.0   # use the tag you want (0.3.0 is unreleased)
   hooks:
     - id: portacheck
 ```
@@ -85,9 +102,37 @@ pre-commit:
 --prefix-len N        assumed length of the Windows clone folder, with trailing backslash (default 50)
 --max-path N          Windows MAX_PATH, counting the terminating NUL (default 260)
 --allow-empty         exit 0 when there is nothing to scan
+--format gitmv        print a reviewable script of `git mv` fixes (never renames anything itself)
+--baseline FILE       hide findings recorded in FILE;  --write-baseline FILE records them
+--new-since REF       with --git: only findings involving paths added since REF
+--disable CODE        turn a check off (repeatable);  --list-codes lists them
 ```
 
+**Fix script.** `--format gitmv` writes `git mv -- old new` lines, deepest paths first so a child moves before its folder, with names made safe (`CON.txt` becomes `CON_.txt`, `a?b` becomes `a_b`, invisible characters are dropped, NFD becomes NFC, collisions get `_2`). Names containing control, bidi or raw bytes use bash `$'...'` quoting with `\uXXXX` escapes, so the script is safe to view and run. Git-metadata names and symlinks are listed as `# manual:` lines, never renamed (renaming `.git .` to `.git` would be the attack itself). It does not fix references to the old names (imports, docs, CI).
+
 **How path length is measured.** The length on *your* CI runner says nothing about Windows, so portacheck adds `--prefix-len` (default 50; `C:\Users\jane.doe\source\repos\project\` is 39) to each repo-relative path, counts UTF-16 units like Windows does, and warns when a file reaches 260 (MAX_PATH includes the terminating NUL) or a folder reaches 248 (MAX_PATH minus room for an 8.3 name — the limit Git for Windows applies when it creates folders). Only the shallowest too-long path is reported, with a count of what's inside it. In a disk walk an empty folder is measured as a file.
+
+## Benchmark
+
+`python benchmarks/bench.py` regenerates everything below and the full tables in [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md). Cases are labelled by how they are built from a known rule (never by any tool's output); Linux Git 2.43, Python 3.13, one machine, so treat the seconds as relative.
+
+| 277 hostile + 2,062 benign names | precision | recall | F1 |
+|---|---|---|---|
+| portacheck 0.3.0 | 1.000 | 1.000 | 1.000 |
+| portacheck 0.2.0 | 1.000 | 0.913 | 0.955 |
+| pre-commit `check-illegal-windows-names` regex | 1.000 | 0.513 | 0.678 |
+| pre-commit `check-case-conflict` | 1.000 | 0.065 | 0.122 |
+| Linux `git` with `core.protectNTFS`/`protectHFS` (only guards `.git`; Git for Windows also refuses device names at checkout, not measured here) | 1.000 | 0.119 | 0.213 |
+
+**Read the 1.000 honestly:** the corpus is written by the same authors as the rules, so it shows coverage and no regressions, not that no other hostile name exists. A check that does not depend on our own labels: for 3,000 random near-misses of Git's `.git` synonyms, real Git and portacheck agree on all of them (319 rejected by both, 0 disagreements).
+
+| 500,000 tracked files (33k folders), fresh process | seconds (median of 5) | peak RSS |
+|---|---|---|
+| portacheck 0.3.0 | 2.4 | 218 MB |
+| portacheck 0.2.0 | 6.9 | 405 MB |
+| pre-commit illegal-names regex, regex only | 5.7 | n/a |
+
+Real repository check: the Linux kernel tree (97,360 files, shallow clone, `git ls-tree` piped to `--stdin0`) scans in 0.4 s (0.9 s on 0.2.0) with the same 13 case collisions on both versions (such as `xt_CONNMARK.h` / `xt_connmark.h`) and no new false positives.
 
 ## How it compares
 
@@ -99,6 +144,9 @@ Only things stated in each project's own docs are listed; "—" means not listed
 | Case collisions incl. folders | yes | yes ([since #575](https://github.com/pre-commit/pre-commit-hooks/pull/575)) | yes | yes | — |
 | NFC/NFD collisions | yes | — | yes | yes | — |
 | Bidi / invisible characters | yes | — | yes | — | — |
+| `.git` / `.gitmodules` aliases (`git~1`, streams, HFS+ ignorables) | yes | — | — | — | yes for `.git`, refuses at checkout |
+| 8.3 short-name clashes, symlink hazards | yes | — | — | — | — |
+| Fix output, baseline, new-only mode | `git mv` script, `--baseline`, `--new-since` | — | — (read-only by design) | text hint per finding | — |
 | Path length on Windows | yes (prefix-aware) | — | no (listed as a limitation) | — | — |
 | Reads the git index | yes (`--git`) | staged files via pre-commit | yes | yes | n/a |
 | Output | text, JSON, GitHub annotations, SARIF | offending file names | text, JSON, SARIF | text | error at clone time |
@@ -109,7 +157,10 @@ Only things stated in each project's own docs are listed; "—" means not listed
 
 - **Case folding is an approximation.** NTFS compares names with a per-volume uppercase table; portacheck uses Python's simple (1:1) uppercase mappings, which is close but not identical across Windows versions. It deliberately does *not* use full case folding, so `straße` and `strasse` are not flagged (NTFS keeps them apart).
 - **macOS behaviour** (case-insensitive, normalization-insensitive by default) is modelled, not emulated per filesystem.
-- **Not covered yet:** 8.3 short-name clashes (`PROGRA~1`), symlinks (which need extra setup on Windows), file contents, and per-line suppression comments.
+- **8.3 short names are modelled, not emulated:** only the first-six-letters rule for ASCII names, and only when short-name creation is on (Git's own source says "at least on the C: drive by default"). Non-ASCII long names are skipped. `.git` and its siblings are checked with a port of Git's own predicates.
+- **Never run on real Windows or macOS here.** Windows and macOS behaviour comes from Microsoft's docs, Git's source (`path.c`, `compat/mingw.c`) and a Linux Git used as an oracle for the `.git` checks; no NTFS, ReFS, OneDrive or APFS volume was available. Other `.git` synonyms (for instance full Unicode case folding on HFS+) may exist that Git itself does not list.
+- **Not covered yet:** OneDrive/SharePoint-only restrictions, `core.protectNTFS` interaction with sparse checkouts, submodule contents, file contents, and per-line suppression comments.
+- **Reading the git index costs one `git ls-files` plus one `git cat-file --batch` for symlinks only.** In a shallow or partial clone a symlink target may be missing; the link is still reported, its target is not checked.
 - Long paths are warnings: Windows 10 1607+ and Git for Windows can opt into long paths ([`core.longpaths`, off by default](https://gitforwindows.org/git-cannot-create-a-file-or-directory-with-a-long-path.html)), but much tooling still breaks.
 - Everything printed is escaped (control, bidi and zero-width characters, raw bytes), so a hostile file name can't rewrite your terminal or CI log.
 
@@ -118,11 +169,13 @@ Rule sources: Microsoft, [Naming Files, Paths, and Namespaces](https://learn.mic
 ## Python API
 
 ```python
-from portacheck import scan_paths, scan_tree, git_paths
+from portacheck import scan_paths, scan_tree, git_paths, git_entries
 
 findings = scan_paths(["docs/CON.md", "src/ok.py"])   # pure, no filesystem
 findings = scan_tree(".")                             # disk walk
 findings = scan_paths(git_paths("."))                 # git index
+paths, links = git_entries(".")                       # git index + tracked symlinks and their targets
+findings = scan_paths(paths, symlinks=links)
 for f in findings:
     print(f.severity, f.code, f.path, f.detail)
 ```

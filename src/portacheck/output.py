@@ -27,6 +27,14 @@ RULES = {
     "invisible_char": "Invisible or bidi format character in name",
     "not_nfc": "Name is not NFC-normalized",
     "path_length": "Path exceeds Windows MAX_PATH when cloned",
+    "git_dir_alias": "Path component is, or aliases, the .git directory",
+    "git_meta_alias": "Alias of .gitmodules/.gitattributes/.gitignore/.mailmap",
+    "short_name_collision": "Name equals the 8.3 short name of a sibling",
+    "symlink": "Tracked symlink (needs privileges on Windows)",
+    "symlink_meta": "Symlink named like Git metadata",
+    "symlink_traversal": "Path below a tracked symlink",
+    "symlink_escape": "Symlink points outside the repository",
+    "symlink_backslash": "Symlink target contains a backslash",
 }
 
 
@@ -61,7 +69,8 @@ def render_json(findings: Sequence[Finding], root: str, scanned: int) -> str:
         "scanned": scanned,
         "errors": errors,
         "warnings": len(findings) - errors,
-        "findings": [dict({k: _json_safe(v) for k, v in f.as_dict().items()}, path_raw_b64=raw_b64(f.path))
+        "findings": [dict({k: ([_json_safe(x) for x in v] if isinstance(v, list) else _json_safe(v))
+                           for k, v in f.as_dict().items()}, path_raw_b64=raw_b64(f.path))
                      for f in findings],
     }, indent=2)
 
@@ -86,15 +95,25 @@ def render_github(findings: Sequence[Finding]) -> str:
 def render_sarif(findings: Sequence[Finding], version: str) -> str:
     """SARIF 2.1.0 for GitHub code scanning and other SARIF viewers."""
     used = sorted({f.code for f in findings} | set(RULES))
+    from .baseline import fingerprint
+
+    def loc(p: str) -> dict:
+        return {"physicalLocation": {"artifactLocation": {
+            "uri": quote(p.encode("utf-8", "surrogateescape"), safe="/"), "uriBaseId": "%SRCROOT%"}}}
+
     results = []
     for f in findings:
-        results.append({
+        res = {
             "ruleId": f.code,
             "level": "error" if f.severity == "error" else "warning",
             "message": {"text": _json_safe(f.detail)},
-            "locations": [{"physicalLocation": {"artifactLocation": {
-                "uri": quote(f.path.encode("utf-8", "surrogateescape"), safe="/"), "uriBaseId": "%SRCROOT%"}}}],
-        })
+            "locations": [loc(f.path)],
+            # stable identity so code scanning tracks a finding across commits even if its wording changes
+            "partialFingerprints": {"portacheck/v1": fingerprint(f)},
+        }
+        if len(f.paths) > 1:
+            res["relatedLocations"] = [dict(loc(p), id=i) for i, p in enumerate(f.paths[1:])]
+        results.append(res)
     doc = {
         "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
         "version": "2.1.0",

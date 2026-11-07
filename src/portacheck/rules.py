@@ -4,7 +4,8 @@ from __future__ import annotations
 import unicodedata
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import List
+import re
+from typing import List, Optional, Tuple
 
 # Windows reserves these as device names: unusable as file OR directory names,
 # with or without an extension (CON.txt cannot be created either). Microsoft's
@@ -35,9 +36,14 @@ class Finding:
     code: str
     path: str
     detail: str
+    #: every path involved (collision members); empty for single-path findings
+    paths: Tuple[str, ...] = ()
 
     def as_dict(self):
-        return {"severity": self.severity, "code": self.code, "path": self.path, "detail": self.detail}
+        d = {"severity": self.severity, "code": self.code, "path": self.path, "detail": self.detail}
+        if self.paths:
+            d["paths"] = list(self.paths)
+        return d
 
 
 def utf16_len(s: str) -> int:
@@ -132,11 +138,120 @@ def _invisible(c: str) -> bool:
     return unicodedata.category(c) == "Cf"
 
 
-def check_component(name: str, where: str = "") -> List[Finding]:
-    """Check one path component (file or directory name)."""
+# --- names Git itself protects (path.c: is_ntfs_dotgit*, is_hfs_dotgit*) ----
+#
+# On NTFS, ".git" is also reachable as ".git . .", "git~1" (8.3 short name) and
+# ".git::$INDEX_ALLOCATION"; on HFS+, as ".g<ZWNJ>it". A tracked path through
+# any of these writes into the repository's own metadata (hooks!) during a
+# checkout: the CVE-2014-9390 / CVE-2019-1350 family. These are ports of Git's
+# own predicates; the tests cross-check them against `git update-index
+# --cacheinfo` with core.protectNTFS/core.protectHFS on a real git.
+
+#: HFS+ ignores these code points completely when comparing names (utf8.c).
+HFS_IGNORABLE = frozenset(
+    [0x200c, 0x200d, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e,
+     0x206a, 0x206b, 0x206c, 0x206d, 0x206e, 0x206f, 0xfeff])
+
+#: dot-file -> NTFS hash-based fall-back short-name prefix used by Git.
+_DOT_META = {
+    "gitmodules": "gi7eba",
+    "gitattributes": "gi7d29",
+    "gitignore": "gi250a",
+    "mailmap": "maba30",
+}
+#: forged aliases of these change what Git executes/reads (error); others warn
+META_SEVERE = frozenset({"git", "gitmodules", "gitattributes"})
+
+
+def _tail_ok(rest: str) -> bool:
+    """Only spaces/dots, optionally followed by an NTFS ':stream' suffix."""
+    for c in rest:
+        if c == ":":
+            return True
+        if c not in " .":
+            return False
+    return True
+
+
+def ntfs_dotgit(name: str) -> bool:
+    """Git's is_ntfs_dotgit: '.git' or 'git~1' + trailing dots/spaces/':stream'."""
+    low = name.lower()
+    if low.startswith(".git"):
+        return _tail_ok(name[4:])
+    if low.startswith("git~1"):
+        return _tail_ok(name[5:])
+    return False
+
+
+def ntfs_dot_meta(name: str) -> Optional[str]:
+    """Key of the gitmodules/gitattributes/gitignore/mailmap file ``name``
+    aliases on NTFS (any case, trailing dots/spaces/streams, ``~1``-``~4``
+    short names, hash fall-back short names) or None. Includes the canonical spelling."""
+    low = name.lower()
+    for key, fb in _DOT_META.items():
+        if low.startswith("." + key) and _tail_ok(name[len(key) + 1:]):
+            return key
+        if low[:6] == key[:6] and low[6:7] == "~" and low[7:8] in ("1", "2", "3", "4") and _tail_ok(name[8:]):
+            return key
+        m = re.match(re.escape(fb) + r"~[0-9]+", low)
+        if m and _tail_ok(name[m.end():]):
+            return key
+    return None
+
+
+def hfs_fold(name: str) -> str:
+    """Name as HFS+ compares it for Git's checks: ignorable code points removed, lowercased."""
+    if name.isascii():
+        return name.lower()
+    return "".join(c for c in name if ord(c) not in HFS_IGNORABLE).lower()
+
+
+def dotgit_kind(name: str) -> Optional[Tuple[str, bool]]:
+    """Classify a path component as Git metadata or an alias of it.
+
+    Returns ``(kind, canonical)``; kind is ``git``, ``gitmodules``,
+    ``gitattributes``, ``gitignore`` or ``mailmap``; ``canonical`` is True only
+    for the exact lowercase spelling (``.gitmodules``). None if unrelated.
+    A backslash is a separator here, as in ``git fsck``.
+    """
+    for piece in name.split("\\"):
+        if not piece:
+            continue
+        if ntfs_dotgit(piece):
+            return "git", False
+        folded = hfs_fold(piece)
+        if folded == ".git":
+            return "git", False
+        for key in _DOT_META:
+            if folded == "." + key:
+                return key, piece == "." + key
+        k = ntfs_dot_meta(piece)
+        if k:
+            return k, False
+    return None
+
+
+# printable ASCII with none of the characters Windows rejects, no leading/trailing space or dot
+_EDGE = r"[A-Za-z0-9_+=,;@#%&()\[\]{}!$^'`~-]"  # may start or end a name
+_SAFE_ASCII = re.compile(_EDGE + r"(?:[A-Za-z0-9_+=,;@#%&()\[\]{}!$^'` ~.-]*" + _EDGE + ")?")
+#: first letters of names that may need the Git-metadata check (".git*", "git~1", "gitmod~1", "gi7eba~1", "mailma~1")
+_META_START = frozenset(".gGmM")
+
+
+def check_component(name: str, where: str = "", on_disk: bool = False) -> List[Finding]:
+    """Check one path component (file or directory name).
+
+    ``on_disk``: the name comes from a working-tree walk, where a real ``.git``
+    folder is normal; only *aliases* of it (``git~1``, ``.git.``) are reported.
+    """
     out: List[Finding] = []
-    if name in (".", ".."):
-        return out  # relative-path markers, not names (Git allows them too)
+    if name in (".", "..", ""):
+        return out  # relative-path markers / empty, not names (Git allows them too)
+    # Fast path: the overwhelmingly common clean ASCII name (no regex of rules, one fullmatch).
+    if name[0] not in _META_START and len(name) <= COMPONENT_MAX and _SAFE_ASCII.fullmatch(name):
+        i = name.find(".")
+        if name[:i if i != -1 else None].rstrip(" ").upper() not in RESERVED:
+            return out
     loc = where or name
     shown = show_name(name)
     # Windows strips trailing dots/spaces, and a device name stays reserved
@@ -153,6 +268,20 @@ def check_component(name: str, where: str = "") -> List[Finding]:
             Finding("error", "reserved_name", loc,
                     f"{shown} collides with the Windows device name {stem}")
         )
+    kind = dotgit_kind(name)
+    if kind is not None:
+        k, canonical = kind
+        if k == "git" and on_disk and name == ".git":
+            pass
+        elif k == "git":
+            out.append(Finding("error", "git_dir_alias", loc,
+                               f"{shown} is, or aliases, the .git directory (NTFS trailing dots/spaces, "
+                               "git~1 short name, :stream, HFS+ ignorable characters): a checkout through it "
+                               "can overwrite .git/hooks (Git refuses such paths)"))
+        elif not canonical:
+            out.append(Finding("error" if k in META_SEVERE else "warn", "git_meta_alias", loc,
+                               f"{shown} is a non-canonical spelling/alias of .{k}: "
+                               "on a case- or alias-insensitive filesystem Git reads it as the real file"))
     bad = sorted({c for c in name if c in INVALID_CHARS or ord(c) < 32})
     if bad:
         out.append(
@@ -189,10 +318,10 @@ def check_component(name: str, where: str = "") -> List[Finding]:
     return out
 
 
-def check_relpath(rel: str) -> List[Finding]:
+def check_relpath(rel: str, on_disk: bool = False) -> List[Finding]:
     """Check every component of a '/'-separated relative path."""
     out: List[Finding] = []
     for part in rel.split("/"):
         if part:
-            out.extend(check_component(part, where=rel))
+            out.extend(check_component(part, where=rel, on_disk=on_disk))
     return out
