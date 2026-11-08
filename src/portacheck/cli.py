@@ -9,7 +9,7 @@ import os
 import sys
 from typing import List, Optional
 
-from . import __version__
+from . import __author__, __version__
 from . import baseline as bl
 from . import config as cfgmod
 from .content import GITMODULES_MAX, gitmodules_findings
@@ -76,6 +76,10 @@ def build_parser() -> argparse.ArgumentParser:
                     + ", ".join(DEFAULT_SKIP) + ")")
     ap.add_argument("--ignore", action="append", default=[], metavar="GLOB",
                     help="suppress findings whose path matches this glob, e.g. 'tests/fixtures/*' (repeatable)")
+    ap.add_argument("--only", action="append", default=[], metavar="GLOB",
+                    help="report only findings whose path (or any path of a collision) matches this glob, e.g. "
+                         "'packages/web/*': for a monorepo team that owns one folder (the whole repository is still "
+                         "scanned, so a clash with another folder is still found; repeatable)")
     ap.add_argument("--disable", action="append", default=[], metavar="CODE",
                     help="turn a check off by code, e.g. --disable symlink (repeatable; see --list-codes)")
     ap.add_argument("--list-codes", action="store_true", help="print every finding code and exit")
@@ -95,7 +99,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--json", action="store_true", help="same as --format json")
     ap.add_argument("--allow-empty", action="store_true",
                     help="exit 0 when there is nothing to scan (default: exit 2, so a broken checkout cannot pass)")
-    ap.add_argument("--version", action="version", version=f"portacheck {__version__}")
+    ap.add_argument("--version", action="version", version=f"portacheck {__version__}\nby {__author__} (MIT license)")
     return ap
 
 
@@ -192,11 +196,11 @@ def _main(argv: Optional[List[str]]) -> int:
             return 2
     for stream in (sys.stdout, sys.stderr):  # never crash on a cp1252 console
         try:
-            stream.reconfigure(errors="portacheck_console")  # type: ignore[attr-defined]
+            stream.reconfigure(errors="portacheck_console")  # type: ignore[attr-defined,union-attr]
         except (AttributeError, ValueError):
             pass
     try:  # Windows would write \r\n: that breaks a `--format gitmv > fix.sh` script and hashes of the output
-        sys.stdout.reconfigure(newline="\n")  # type: ignore[attr-defined]
+        sys.stdout.reconfigure(newline="\n")  # type: ignore[attr-defined,union-attr]
     except (AttributeError, ValueError, OSError):
         pass
 
@@ -234,7 +238,8 @@ def _main(argv: Optional[List[str]]) -> int:
         _err("nothing to scan (no paths found) — refusing to pass; use --allow-empty if that is expected")
         return 2
 
-    findings = scan_paths(paths, max_path=max_path, prefix_len=prefix_len, symlinks=symlinks, on_disk=on_disk)
+    findings = scan_paths(paths, max_path=max_path, prefix_len=prefix_len, symlinks=symlinks, on_disk=on_disk,
+                           strict_dots=bool(args.git or args.rev is not None))
     if gitmodules is not None:
         findings.extend(gitmodules_findings(gitmodules))
         findings.sort(key=lambda f: (f.severity != "error", f.code, f.path))
@@ -270,6 +275,11 @@ def _main(argv: Optional[List[str]]) -> int:
         for g, _ in ignore_globs:
             if g not in used and g not in refused:
                 _err(f"ignore pattern {safe(g)} matched no finding (stale?)")
+    if args.only:
+        def wanted(f) -> bool:
+            return any(fnmatch.fnmatchcase(p, g) for g in args.only for p in (f.paths or (f.path,)))
+
+        findings = [f for f in findings if wanted(f)]
     if args.write_baseline:
         try:
             bl.write_atomic(args.write_baseline, bl.dumps(findings))

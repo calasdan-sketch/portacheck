@@ -223,6 +223,24 @@ def _posix_length_findings(paths: Sequence[str], dirs: Set[str]) -> List[Finding
 _HUGE_COMPONENT_REPORTS = 20
 
 
+_DOTTY = re.compile(r"(?:^|/)\.{1,2}(?:/|$)|^/|//|/$")
+
+
+def _dot_findings(rel: str) -> List[Finding]:
+    """A git tree can hold entries named ``.``, ``..`` or empty (git fsck: hasDot, hasDotdot, emptyName) that Git itself
+    refuses to check out; ``_tree`` would otherwise tidy them away. Not used for file lists from other tools, where
+    ``./x`` and ``../x`` are ordinary relative paths."""
+    parts = rel.split("/")
+    if ".." in parts:
+        return [Finding("error", "dotdot_component", rel[:300],
+                        "path has a '..' component: it walks out of its folder (Git refuses to check such a path out)")]
+    if "." in parts or "" in parts:
+        return [Finding("error", "dot_component", rel[:300],
+                        "path has a '.' or empty component: Git refuses to check such a path out, "
+                        "and it would otherwise be read as a different path")]
+    return []
+
+
 def _huge_findings(huge: Sequence[str], on_disk: bool) -> List[Finding]:
     """Paths of ``LINUX_PATH_MAX`` bytes or more. They cannot be created on Linux or macOS, and
     folding every prefix of one into the folder tree would cost memory quadratic in its length, so they are
@@ -395,6 +413,7 @@ def scan_paths(
     prefix_len: int = DEFAULT_PREFIX_LEN,
     symlinks: Optional[Dict[str, Optional[str]]] = None,
     on_disk: bool = False,
+    strict_dots: bool = False,
 ) -> List[Finding]:
     """Check '/'-separated repo-relative paths. Pure: no filesystem access.
 
@@ -403,9 +422,12 @@ def scan_paths(
     None) enables the symlink checks; ``on_disk`` tolerates a real ``.git`` folder.
     """
     huge: List[str] = []
+    dotted: List[Finding] = []
 
     def bounded() -> Iterable[str]:
         for rel in rel_paths:
+            if strict_dots and _DOTTY.search(rel):
+                dotted.extend(_dot_findings(rel))
             if len(rel) >= MACOS_PATH_MAX and len(path_bytes(rel)) >= LINUX_PATH_MAX:
                 huge.append(rel)
             else:
@@ -413,6 +435,7 @@ def scan_paths(
 
     paths, by_dir = _tree(bounded())
     findings: List[Finding] = _huge_findings(huge, on_disk)
+    findings.extend(dotted)
     cache: Dict[str, List[Finding]] = {}
     for parent, names in by_dir.items():
         for name in names:
@@ -503,6 +526,31 @@ def _git_env() -> Dict[str, str]:
     return env
 
 
+#: environment variables that make git ignore the folder it was pointed at
+_REPO_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR")
+
+
+def check_git_env(root: str, timeout: float = 30.0) -> None:
+    """Fail closed when an inherited ``GIT_DIR`` / ``GIT_WORK_TREE`` / ``GIT_COMMON_DIR`` would make git read a different
+    repository than the folder we were asked to scan (git lets those variables win over ``-C``), which would
+    silently report on the wrong repository. Hooks that scan their own repository are unaffected."""
+    if not any(os.environ.get(k) for k in _REPO_ENV):
+        return
+    def git_dir(env: Dict[str, str]) -> Optional[str]:
+        try:
+            p = subprocess.run(["git", "-C", root, "rev-parse", "--absolute-git-dir"], stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL, timeout=timeout, check=False, env=env)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return os.path.normcase(os.path.realpath(p.stdout.decode("utf-8", "surrogateescape").strip())) if p.returncode == 0 else None
+    inherited = git_dir(_git_env())
+    clean = git_dir({k: v for k, v in _git_env().items() if k not in _REPO_ENV})
+    if inherited != clean:
+        names = ", ".join(k for k in _REPO_ENV if os.environ.get(k))
+        raise GitError(f"the environment variable {names} points git at a different repository than {root!r}, "
+                       "so the scan would report on the wrong one; unset it, or run portacheck from inside the repository")
+
+
 #: git settings forced on every call: a hostile repository's own config cannot run its fsmonitor hook
 #: through us, and a repo-level diff.relative cannot hide paths outside the folder we were pointed at.
 _GIT_FLAGS = ["-c", "core.fsmonitor=false", "-c", "diff.relative=false"]
@@ -529,6 +577,7 @@ def git_paths(root: str, timeout: float = 120.0) -> List[str]:
     Reads the index, not the disk, so it sees exactly what a Windows clone gets
     — including paths your OS could never create. Raises :class:`GitError`.
     """
+    check_git_env(root, timeout)
     return decode_nul_list(_run_git(root, ["ls-files", "-z", "--cached", "--full-name", "--", ":/"], timeout))
 
 
@@ -580,7 +629,8 @@ def _gitmodules_prefix(root: str, sha: str, limit: int, timeout: float) -> Optio
         data = proc.stdout.read(limit + 1)
     finally:
         proc.kill()
-        proc.stdout.close()
+        if proc.stdout is not None:
+            proc.stdout.close()
         proc.wait()
     return data
 
@@ -611,6 +661,7 @@ def git_snapshot(root: str, rev: Optional[str] = None, timeout: float = 120.0) -
     """The tracked tree of the whole repository containing ``root``: the index, or the tree of commit-ish ``rev``
     (a branch, tag or hash; nothing is checked out). Raises :class:`GitError`."""
     records: List[Tuple[str, str, str]] = []
+    check_git_env(root, timeout)
     if rev is None:
         raw = _run_git(root, ["ls-files", "-z", "--cached", "--stage", "--full-name", "--", ":/"], timeout)
         for rec in raw.split(b"\0"):
@@ -651,6 +702,7 @@ def git_added_paths(root: str, ref: str, timeout: float = 120.0) -> List[str]:
     Compares the index, which is what ``--git`` scans."""
     if ref.startswith("-"):
         raise GitError(f"refusing ref that looks like an option: {ref!r}")
+    check_git_env(root, timeout)
     out = _run_git(root, ["diff", "--cached", "--name-only", "-z", "--no-renames", "--diff-filter=A", ref, "--"], timeout)
     return decode_nul_list(out)
 

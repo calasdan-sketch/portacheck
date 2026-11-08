@@ -24,6 +24,7 @@ $ python -m portacheck --explain case_collision   # why a finding matters and ho
 | `path_length` | warn | deep `node_modules`-style trees | over 259 chars once cloned into a typical Windows folder |
 | `git_dir_alias` | error | `git~1/hooks/post-checkout`, `.git . ./x`, `.git::$INDEX_ALLOCATION/x`, `.g<ZWNJ>it/x` | on Windows/macOS these resolve to the repo's own `.git`; a checkout through one can overwrite `.git/hooks` and run code (Git itself refuses them since [CVE-2014-9390](https://nvd.nist.gov/vuln/detail/CVE-2014-9390); portacheck catches them in the tree *before* a clone does) |
 | `git_meta_alias` | error / warn | `.GitModules`, `GITMOD~1`, `gi7eba~1`, `.gitmodules ` | non-canonical spellings of `.gitmodules` / `.gitattributes` (error) or `.gitignore` / `.mailmap` (warn) that Git reads as the real file on case- or alias-insensitive filesystems |
+| `dotdot_component`, `dot_component` | error | a git tree entry named `..`, `.` or empty (`--git` / `--rev` only) | `git fsck` calls these hasDotdot / hasDot / emptyName and Git refuses to check them out; a hand-made tree can still hold them. Not applied to `--stdin0`, where `../x` is an ordinary relative path |
 | `short_name_collision` | error | `longfilename.txt` + `LONGFI~1.TXT` | NTFS gives long names a hidden 8.3 alias; a tracked file that *is* that alias clashes with it (when short names are enabled) |
 | `symlink` | warn | any tracked symlink | on Windows it needs Developer Mode/admin plus `core.symlinks=true`; otherwise [Git checks it out as a small text file](https://git-scm.com/docs/git-config) |
 | `symlink_meta` / `symlink_traversal` | error | symlink named `.gitmodules`; `lnk/inner` below tracked symlink `lnk` | a link where Git expects a file, or a path written through a link, redirects the checkout |
@@ -128,6 +129,8 @@ pre-commit:
 --config FILE         a settings file you trust;  --no-config ignores any found file
 --strict              warnings also fail
 --ignore GLOB         drop findings whose path matches, e.g. 'tests/fixtures/*' (repeatable)
+--only GLOB           report only findings under this glob, e.g. 'packages/web/*' (monorepo team view; the whole
+                      repository is still scanned, so a clash with another folder is still found)
 --prefix-len N        assumed length of the Windows clone folder, with trailing backslash (default 50)
 --max-path N          Windows MAX_PATH, counting the terminating NUL (default 260)
 --allow-empty         exit 0 when there is nothing to scan
@@ -203,8 +206,9 @@ Only things stated in each project's own docs are listed (read 2026-11-07); "—
 - **Look-alike detection is a small curated subset** of Unicode's confusables (44 Cyrillic and Greek letters, plus NFKC for ligatures and full-width forms). Two names that differ only by a character outside that set are not flagged, and `l`/`I`/`1`-style ASCII look-alikes are deliberately ignored.
 - **`.gitmodules`:** only the root file, and only the rules listed above, compared with the `git fsck` of Git 2.43 (the only version available here); newer Git versions may check more. The submodules' own contents are not read. A byte-order mark is stripped before parsing (Git's fsck reports such a file as unparsable; portacheck still checks it).
 - **Byte limits:** `NAME_MAX` 255 bytes on Linux and `PATH_MAX` 4096 are Linux facts; macOS's 1024-byte `PATH_MAX` is from `sys/syslimits.h` and the APFS name limit is not verified. Only the repo-relative part of a path is measured. Paths of 4,096+ bytes are reported but left out of the collision checks (they would cost memory quadratic in their length).
+- **Wrong repository.** Git lets an inherited `GIT_DIR`, `GIT_WORK_TREE` or `GIT_COMMON_DIR` win over the folder you name. portacheck compares the two and exits 2 with a plain message when they point at different repositories, instead of reporting on the wrong one. `GIT_INDEX_FILE` (set by Git while it runs a pre-commit hook) is honoured on purpose.
 - **Trust:** a baseline or settings file stored in the repository you scan is written by that repository's authors. Take them from the base branch when checking pull requests from forks (see Settings file).
-- **Tested on:** Linux with Git 2.43: the test suite on Python 3.9 and 3.13 (172 tests), and the built wheel installed into clean virtual environments on 3.9 and 3.13. 3.10-3.12 are not run this round. **Never run on Windows or macOS.** Windows behaviour was reviewed by reading the code (path separators, line endings, console encodings, `os.replace`, closed pipes, volumes that report inode 0) and the Windows-shaped parts are simulated in tests; `.github/workflows/ci.yml` runs the suite on Windows, and that run has not been seen yet. Paths longer than 259 characters in a *disk walk* on Windows may fail to open (`--git` and `--rev` do not walk the disk); the run then exits 2 rather than passing.
+- **Tested on:** Linux with Git 2.43: the test suite on Python 3.9 and 3.13 (188 tests), and the built wheel installed into clean virtual environments on 3.9 and 3.13. 3.10-3.12 are not run this round. **Never run on Windows or macOS.** Windows behaviour was reviewed by reading the code (path separators, line endings, console encodings, `os.replace`, closed pipes, volumes that report inode 0) and the Windows-shaped parts are simulated in tests; `.github/workflows/ci.yml` runs the suite on Windows, and that run has not been seen yet. Paths longer than 259 characters in a *disk walk* on Windows may fail to open (`--git` and `--rev` do not walk the disk); the run then exits 2 rather than passing.
 - **Memory:** about 0.45 KB per tracked path (218 MB for 500,000 files).
 - Everything printed is escaped (control, bidi and zero-width characters, raw bytes), so a hostile file name can't rewrite your terminal or CI log.
 
@@ -226,4 +230,4 @@ for f in findings:
 
 ## License
 
-MIT
+MIT, Copyright (c) 2026 Calas Automations Inc. Maintained by Calas Automations Inc.

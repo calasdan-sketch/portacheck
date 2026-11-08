@@ -1,0 +1,79 @@
+{
+  "path": "<golden>",
+  "scanned": 11,
+  "errors": 7,
+  "warnings": 2,
+  "findings": [
+    {
+      "severity": "error",
+      "code": "case_collision",
+      "path": "src/Util.py",
+      "detail": "paths differ only by case and cannot coexist on Windows: src/Util.py, src/util.py",
+      "paths": [
+        "src/Util.py",
+        "src/util.py"
+      ],
+      "path_raw_b64": "c3JjL1V0aWwucHk="
+    },
+    {
+      "severity": "error",
+      "code": "git_meta_alias",
+      "path": ".GITMODULES",
+      "detail": "'.GITMODULES' is a non-canonical spelling/alias of .gitmodules: on a case- or alias-insensitive filesystem Git reads it as the real file",
+      "path_raw_b64": "LkdJVE1PRFVMRVM="
+    },
+    {
+      "severity": "error",
+      "code": "invalid_char",
+      "path": "bad:name",
+      "detail": "'bad:name' contains character(s) Windows rejects: ':'",
+      "path_raw_b64": "YmFkOm5hbWU="
+    },
+    {
+      "severity": "error",
+      "code": "invalid_char",
+      "path": "gone/\u0007bell",
+      "detail": "'\\u0007bell' contains character(s) Windows rejects: '\\u0007'",
+      "path_raw_b64": "Z29uZS8HYmVsbA=="
+    },
+    {
+      "severity": "error",
+      "code": "reserved_name",
+      "path": "docs/CON.md",
+      "detail": "'CON.md' collides with the Windows device name CON",
+      "path_raw_b64": "ZG9jcy9DT04ubWQ="
+    },
+    {
+      "severity": "error",
+      "code": "trailing_dot",
+      "path": "trail.",
+      "detail": "'trail.' ends with a dot \u2014 Windows silently strips it",
+      "path_raw_b64": "dHJhaWwu"
+    },
+    {
+      "severity": "error",
+      "code": "unicode_collision",
+      "path": "cafe\u0301.txt",
+      "detail": "paths differ only by Unicode normalization and are the same file on macOS: 'cafe\\u0301.txt', 'caf\\u00e9.txt'",
+      "paths": [
+        "cafe\u0301.txt",
+        "caf\u00e9.txt"
+      ],
+      "path_raw_b64": "Y2FmZcyBLnR4dA=="
+    },
+    {
+      "severity": "warn",
+      "code": "invisible_char",
+      "path": "a\u202eb.txt",
+      "detail": "'a\\u202eb.txt' contains invisible/bidi format character(s) U+202E \u2014 the name can display differently from what it is",
+      "path_raw_b64": "YeKArmIudHh0"
+    },
+    {
+      "severity": "warn",
+      "code": "not_nfc",
+      "path": "cafe\u0301.txt",
+      "detail": "'cafe\\u0301.txt' is not NFC-normalized (composed form: 'caf\\xe9.txt'); macOS and Linux tools can treat the two as different files",
+      "path_raw_b64": "Y2FmZcyBLnR4dA=="
+    }
+  ]
+}

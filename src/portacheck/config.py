@@ -23,7 +23,7 @@ except ImportError:  # pragma: no cover - exercised through parse_toml_subset in
 PROTECTED = frozenset({
     "git_dir_alias", "git_meta_alias", "symlink_meta", "symlink_traversal", "reserved_name",
     "submodule_name", "submodule_url", "submodule_path", "submodule_update", "submodule_config",
-    "invalid_encoding", "path_length_posix",
+    "invalid_encoding", "path_length_posix", "dotdot_component", "dot_component",
 })
 
 KEYS = {"disable": list, "ignore": list, "skip": list, "prefix_len": int, "max_path": int,

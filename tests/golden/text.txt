@@ -1,0 +1,12 @@
+ERROR case_collision     src/Util.py: paths differ only by case and cannot coexist on Windows: src/Util.py, src/util.py
+ERROR git_meta_alias     .GITMODULES: '.GITMODULES' is a non-canonical spelling/alias of .gitmodules: on a case- or alias-insensitive filesystem Git reads it as the real file
+ERROR invalid_char       bad:name: 'bad:name' contains character(s) Windows rejects: ':'
+ERROR invalid_char       gone/\u0007bell: '\u0007bell' contains character(s) Windows rejects: '\u0007'
+ERROR reserved_name      docs/CON.md: 'CON.md' collides with the Windows device name CON
+ERROR trailing_dot       trail.: 'trail.' ends with a dot — Windows silently strips it
+ERROR unicode_collision  café.txt: paths differ only by Unicode normalization and are the same file on macOS: 'cafe\u0301.txt', 'caf\u00e9.txt'
+WARN  invisible_char     a\u202eb.txt: 'a\u202eb.txt' contains invisible/bidi format character(s) U+202E — the name can display differently from what it is
+WARN  not_nfc            café.txt: 'cafe\u0301.txt' is not NFC-normalized (composed form: 'caf\xe9.txt'); macOS and Linux tools can treat the two as different files
+
+7 error(s), 2 warning(s) — FAIL
+by code: invalid_char 2, case_collision 1, git_meta_alias 1, invisible_char 1, not_nfc 1, reserved_name 1, trailing_dot 1, unicode_collision 1

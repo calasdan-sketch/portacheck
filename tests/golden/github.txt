@@ -1,0 +1,9 @@
+::error file=src/Util.py,title=portacheck case_collision::paths differ only by case and cannot coexist on Windows: src/Util.py, src/util.py
+::error file=.GITMODULES,title=portacheck git_meta_alias::'.GITMODULES' is a non-canonical spelling/alias of .gitmodules: on a case- or alias-insensitive filesystem Git reads it as the real file
+::error file=bad%3Aname,title=portacheck invalid_char::'bad:name' contains character(s) Windows rejects: ':'
+::error file=gone/\u0007bell,title=portacheck invalid_char::'\u0007bell' contains character(s) Windows rejects: '\u0007'
+::error file=docs/CON.md,title=portacheck reserved_name::'CON.md' collides with the Windows device name CON
+::error file=trail.,title=portacheck trailing_dot::'trail.' ends with a dot — Windows silently strips it
+::error file=café.txt,title=portacheck unicode_collision::paths differ only by Unicode normalization and are the same file on macOS: 'cafe\u0301.txt', 'caf\u00e9.txt'
+::warning file=a\u202eb.txt,title=portacheck invisible_char::'a\u202eb.txt' contains invisible/bidi format character(s) U+202E — the name can display differently from what it is
+::warning file=café.txt,title=portacheck not_nfc::'cafe\u0301.txt' is not NFC-normalized (composed form: 'caf\xe9.txt'); macOS and Linux tools can treat the two as different files

@@ -27,6 +27,8 @@ RULES = {
     "invisible_char": "Invisible or bidi format character in name",
     "not_nfc": "Name is not NFC-normalized",
     "path_length": "Path exceeds Windows MAX_PATH when cloned",
+    "dotdot_component": "Path has a '..' component (walks out of its folder)",
+    "dot_component": "Git path has a '.' or empty component",
     "git_dir_alias": "Path component is, or aliases, the .git directory",
     "git_meta_alias": "Alias of .gitmodules/.gitattributes/.gitignore/.mailmap",
     "short_name_collision": "Name equals the 8.3 short name of a sibling",
@@ -71,6 +73,10 @@ EXPLAIN = {
                 "Rename to the composed (NFC) form.", "https://unicode.org/reports/tr15/"),
     "path_length": ("warn", "Over MAX_PATH once cloned under a typical Windows folder; fails unless long paths are "
                     "enabled (Git: core.longpaths).", "Shorten folder names or tune --prefix-len.", _MS),
+    "dotdot_component": ("error", "A git tree can hold an entry named '..'; checking it out would write outside the "
+                         "folder. Git refuses it (git fsck: hasDotdot).", "Remove the entry from the tree.", _GITC),
+    "dot_component": ("error", "A git tree can hold an entry named '.' or an empty name (git fsck: hasDot, emptyName); "
+                      "Git refuses to check it out.", "Remove the entry from the tree.", _GITC),
     "git_dir_alias": ("error", "On Windows/macOS this name resolves to the repository's own .git; a checkout through "
                       "it can overwrite hooks and run code (CVE-2014-9390 family).",
                       "Delete or rename it by hand; never `git mv` it to `.git`.", _GITC),
@@ -246,7 +252,8 @@ def render_sarif(findings: Sequence[Finding], version: str) -> str:
         "version": "2.1.0",
         "runs": [{
             "tool": {"driver": {
-                "name": "portacheck", "version": version, "informationUri": INFO_URI,
+                "name": "portacheck", "version": version, "organization": "Calas Automations Inc.",
+                "informationUri": INFO_URI,
                 "rules": [_sarif_rule(r) for r in used],
             }},
             "results": results,

@@ -103,7 +103,8 @@ def mac_nfc(s: str) -> str:
         return s
     if not any(_is_cjk_compat(c) for c in s):
         return unicodedata.normalize("NFC", s)
-    out, seg = [], []
+    out: List[str] = []
+    seg: List[str] = []
     for c in s:
         if _is_cjk_compat(c):
             out.append(unicodedata.normalize("NFC", "".join(seg)))
@@ -311,7 +312,7 @@ def check_component(name: str, where: str = "", on_disk: bool = False) -> List[F
     """
     out: List[Finding] = []
     if name in (".", "..", ""):
-        return out  # relative-path markers / empty, not names (Git allows them too)
+        return out  # relative-path markers / empty: scan_paths(strict_dots=True) reports them for git sources
     # Fast path: the overwhelmingly common clean ASCII name (no regex of rules, one fullmatch).
     if name[0] not in _META_START and len(name) <= COMPONENT_MAX and _SAFE_ASCII.fullmatch(name):
         i = name.find(".")

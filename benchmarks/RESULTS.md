@@ -69,3 +69,9 @@ Accuracy unchanged: 1.000 / 1.000 / 1.000 on the 288 + 2,071 corpus; Git `.git`-
 | round 3 tree | 4.32 | 3.93 | 250 |
 
 Hostile 3,000-component path: 0.11 s, 22 MB, both trees. The two trees differ by noise only: round 4 did not touch the scanning code.
+
+## Round 5 re-run (vs the round-4 tree; Linux, Git 2.43, Python 3.13; the machine was shared with other jobs, so timings are noisy)
+
+Accuracy unchanged: 1.000 / 1.000 / 1.000 on the 288 + 2,071 corpus; Git `.git`-synonym parity 319 / 0 / 0 / 2,671; `.gitmodules` vs `git fsck --strict` 332 / 0 / 0 / 68. Hostile 3,000-component path: 0.24 s, 23 MB for both trees. Peak memory for 500,000 files: 250 MB for both trees.
+
+Speed is not a reliable comparison this round: the full 500,000-file benchmark gave a median of 15.5 s (best 8.9 s) for this tree and 13.2 s (best 9.4 s) for the previous one while other jobs ran; a second, in-process timing of `scan_paths` on 300,000 paths gave medians of 1.7 s and 1.6 s (this tree) against 2.0 s and 1.0 s (previous). The only new work on the hot path is one compiled-regex search per path, and only for `--git` / `--rev`. Not a measured regression, not a proven absence of one.

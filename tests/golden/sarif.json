@@ -1,0 +1,526 @@
+{
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "portacheck",
+          "version": "0.0.0",
+          "organization": "Calas Automations Inc.",
+          "informationUri": "https://github.com/calasdan-sketch/portacheck",
+          "rules": [
+            {
+              "id": "case_collision",
+              "shortDescription": {
+                "text": "Paths differ only by case"
+              },
+              "help": {
+                "text": "Two paths that differ only by case are one file on Windows and default macOS; a checkout keeps one and silently loses the other. Fix: Rename one; keep one spelling."
+              },
+              "helpUri": "https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file"
+            },
+            {
+              "id": "component_bytes",
+              "shortDescription": {
+                "text": "Name longer than 255 UTF-8 bytes (cannot exist on Linux)"
+              },
+              "help": {
+                "text": "Linux file systems limit a name to 255 bytes (NAME_MAX), but NTFS counts UTF-16 units: a short-looking name of CJK/emoji characters can be too long on Linux. macOS/APFS limit not verified here. Fix: Shorten the name."
+              },
+              "helpUri": "https://man7.org/linux/man-pages/man3/limits.h.0p.html"
+            },
+            {
+              "id": "component_too_long",
+              "shortDescription": {
+                "text": "Path component longer than 255 UTF-16 units"
+              },
+              "help": {
+                "text": "NTFS allows 255 UTF-16 units per name. Fix: Shorten the name."
+              },
+              "helpUri": "https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file"
+            },
+            {
+              "id": "confusable_name",
+              "shortDescription": {
+                "text": "Sibling names that look alike (homoglyphs, ligatures, full-width)"
+              },
+              "help": {
+                "text": "Two different files whose names look alike (Cyrillic/Greek letters, ligatures, full-width forms): a reviewer cannot tell README.md from R\u0415ADME.md. Uses a small curated subset of Unicode confusables.txt, so it is not exhaustive. Fix: Rename one; ASCII is safest."
+              },
+              "helpUri": "https://www.unicode.org/reports/tr39/"
+            },
+            {
+              "id": "dot_component",
+              "shortDescription": {
+                "text": "Git path has a '.' or empty component"
+              },
+              "help": {
+                "text": "A git tree can hold an entry named '.' or an empty name (git fsck: hasDot, emptyName); Git refuses to check it out. Fix: Remove the entry from the tree."
+              },
+              "helpUri": "https://github.com/git/git/blob/master/path.c"
+            },
+            {
+              "id": "dotdot_component",
+              "shortDescription": {
+                "text": "Path has a '..' component (walks out of its folder)"
+              },
+              "help": {
+                "text": "A git tree can hold an entry named '..'; checking it out would write outside the folder. Git refuses it (git fsck: hasDotdot). Fix: Remove the entry from the tree."
+              },
+              "helpUri": "https://github.com/git/git/blob/master/path.c"
+            },
+            {
+              "id": "git_dir_alias",
+              "shortDescription": {
+                "text": "Path component is, or aliases, the .git directory"
+              },
+              "help": {
+                "text": "On Windows/macOS this name resolves to the repository's own .git; a checkout through it can overwrite hooks and run code (CVE-2014-9390 family). Fix: Delete or rename it by hand; never `git mv` it to `.git`."
+              },
+              "helpUri": "https://github.com/git/git/blob/master/path.c"
+            },
+            {
+              "id": "git_meta_alias",
+              "shortDescription": {
+                "text": "Alias of .gitmodules/.gitattributes/.gitignore/.mailmap"
+              },
+              "help": {
+                "text": "A non-canonical spelling of .gitmodules/.gitattributes/.gitignore/.mailmap that Git reads as the real file on case- or alias-insensitive filesystems. Fix: Delete it, or rename to the canonical name if intended."
+              },
+              "helpUri": "https://github.com/git/git/blob/master/path.c"
+            },
+            {
+              "id": "invalid_char",
+              "shortDescription": {
+                "text": "Character Windows rejects in file names"
+              },
+              "help": {
+                "text": "< > : \" | ? * \\ and control characters are rejected in Windows names. Fix: Replace the character; `--format gitmv` proposes a name."
+              },
+              "helpUri": "https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file"
+            },
+            {
+              "id": "invalid_encoding",
+              "shortDescription": {
+                "text": "Path is not valid UTF-8"
+              },
+              "help": {
+                "text": "The name is not valid UTF-8, so Git for Windows cannot reproduce it. Fix: Rename it with valid UTF-8 (git mv with the escaped bytes shown)."
+              },
+              "helpUri": "https://github.com/git/git/blob/master/path.c"
+            },
+            {
+              "id": "invisible_char",
+              "shortDescription": {
+                "text": "Invisible or bidi format character in name"
+              },
+              "help": {
+                "text": "Bidi or zero-width characters make a name display as something else (Trojan Source). Fix: Remove the character."
+              },
+              "helpUri": "https://trojansource.codes/"
+            },
+            {
+              "id": "mixed_script",
+              "shortDescription": {
+                "text": "One word mixes Latin with Cyrillic/Greek look-alikes"
+              },
+              "help": {
+                "text": "A single word mixes Latin with Cyrillic/Greek look-alike letters (p\u0430ypal). Fix: Use one script per word."
+              },
+              "helpUri": "https://www.unicode.org/reports/tr39/"
+            },
+            {
+              "id": "not_nfc",
+              "shortDescription": {
+                "text": "Name is not NFC-normalized"
+              },
+              "help": {
+                "text": "A decomposed name may be treated as a different file by macOS and Linux tools. Fix: Rename to the composed (NFC) form."
+              },
+              "helpUri": "https://unicode.org/reports/tr15/"
+            },
+            {
+              "id": "os_junk",
+              "shortDescription": {
+                "text": "Operating-system metadata file (.DS_Store, Thumbs.db, ._*)"
+              },
+              "help": {
+                "text": "Finder/Explorer metadata committed by accident. Fix: git rm it and add it to .gitignore."
+              }
+            },
+            {
+              "id": "path_length",
+              "shortDescription": {
+                "text": "Path exceeds Windows MAX_PATH when cloned"
+              },
+              "help": {
+                "text": "Over MAX_PATH once cloned under a typical Windows folder; fails unless long paths are enabled (Git: core.longpaths). Fix: Shorten folder names or tune --prefix-len."
+              },
+              "helpUri": "https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file"
+            },
+            {
+              "id": "path_length_posix",
+              "shortDescription": {
+                "text": "Path beyond macOS (1024) or Linux (4096) PATH_MAX"
+              },
+              "help": {
+                "text": "macOS's PATH_MAX is 1024 and Linux's 4096 bytes (including the NUL); a relative path alone beyond that cannot be created. 4096+ bytes is an error and is kept out of the collision checks. macOS value from sys/syslimits.h, not run on macOS here. Fix: Flatten the folder tree."
+              },
+              "helpUri": "https://man7.org/linux/man-pages/man3/limits.h.0p.html"
+            },
+            {
+              "id": "reserved_name",
+              "shortDescription": {
+                "text": "Windows reserved device name (CON, NUL, COM1, ...)"
+              },
+              "help": {
+                "text": "Windows treats CON, PRN, AUX, NUL, COM1-9, LPT1-9 (and a few more) as devices, with any extension: the file cannot be created or opened. Fix: Rename it (CON.txt -> con_notes.txt)."
+              },
+              "helpUri": "https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file"
+            },
+            {
+              "id": "short_name_collision",
+              "shortDescription": {
+                "text": "Name equals the 8.3 short name of a sibling"
+              },
+              "help": {
+                "text": "NTFS gives long names a hidden 8.3 alias; a tracked file named like that alias clashes with it. Fix: Rename the tilde-style file."
+              },
+              "helpUri": "https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file"
+            },
+            {
+              "id": "submodule_config",
+              "shortDescription": {
+                "text": ".gitmodules that is too large or does not parse"
+              },
+              "help": {
+                "text": ".gitmodules over 1 MiB (Git's fsck refuses it) or a line Git cannot parse. Fix: Repair the file."
+              }
+            },
+            {
+              "id": "submodule_name",
+              "shortDescription": {
+                "text": ".gitmodules submodule name with '..' (CVE-2018-11235)"
+              },
+              "help": {
+                "text": "git builds .git/modules/<name> from the name; '..' writes outside .git/modules and can plant a hook (CVE-2018-11235). Git's own fsck rejects it (gitmodulesName). Fix: Delete the .gitmodules entry."
+              },
+              "helpUri": "https://nvd.nist.gov/vuln/detail/CVE-2018-11235"
+            },
+            {
+              "id": "submodule_path",
+              "shortDescription": {
+                "text": ".gitmodules path starting with '-'"
+              },
+              "help": {
+                "text": "A path starting with '-' can be read as an option. Fix: Use a normal path."
+              }
+            },
+            {
+              "id": "submodule_update",
+              "shortDescription": {
+                "text": ".gitmodules update setting that is a '!' command"
+              },
+              "help": {
+                "text": "update = !command would run a command taken from .gitmodules; Git's fsck rejects it (gitmodulesUpdate). Fix: Remove the setting."
+              }
+            },
+            {
+              "id": "submodule_url",
+              "shortDescription": {
+                "text": ".gitmodules url that Git or ssh reads as an option or command"
+              },
+              "help": {
+                "text": "A url starting with '-' is read as an option (CVE-2017-1000117); an encoded newline can inject into credential helpers (CVE-2020-11008); ext:: runs a command (disabled by default). Fix: Use a normal https:// or ssh:// url."
+              },
+              "helpUri": "https://nvd.nist.gov/vuln/detail/CVE-2017-1000117"
+            },
+            {
+              "id": "symlink",
+              "shortDescription": {
+                "text": "Tracked symlink (needs privileges on Windows)"
+              },
+              "help": {
+                "text": "On Windows a symlink needs Developer Mode/admin plus core.symlinks=true; otherwise Git writes a small text file. Fix: Avoid symlinks, or `--disable symlink` if the repo needs them."
+              },
+              "helpUri": "https://git-scm.com/docs/git-config"
+            },
+            {
+              "id": "symlink_backslash",
+              "shortDescription": {
+                "text": "Symlink target contains a backslash"
+              },
+              "help": {
+                "text": "A backslash is a separator on Windows and an ordinary character elsewhere. Fix: Use forward slashes in link targets."
+              }
+            },
+            {
+              "id": "symlink_escape",
+              "shortDescription": {
+                "text": "Symlink points outside the repository"
+              },
+              "help": {
+                "text": "The link points outside the repository or is absolute. Fix: Use a relative in-repo target."
+              }
+            },
+            {
+              "id": "symlink_meta",
+              "shortDescription": {
+                "text": "Symlink named like Git metadata"
+              },
+              "help": {
+                "text": "A symlink named .gitmodules (etc.) redirects what Git reads and writes. Fix: Remove the link."
+              },
+              "helpUri": "https://github.com/git/git/blob/master/path.c"
+            },
+            {
+              "id": "symlink_traversal",
+              "shortDescription": {
+                "text": "Path below a tracked symlink"
+              },
+              "help": {
+                "text": "A path below a tracked symlink can be written through the link to anywhere (CVE-2018-11235 style). Fix: Remove the link or the path below it."
+              },
+              "helpUri": "https://nvd.nist.gov/vuln/detail/CVE-2018-11235"
+            },
+            {
+              "id": "trailing_dot",
+              "shortDescription": {
+                "text": "Name ends with a dot"
+              },
+              "help": {
+                "text": "Windows silently drops trailing dots. Fix: Remove the trailing dot."
+              },
+              "helpUri": "https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file"
+            },
+            {
+              "id": "trailing_space",
+              "shortDescription": {
+                "text": "Name ends with a space"
+              },
+              "help": {
+                "text": "Windows silently drops trailing spaces, so the file 'disappears' or collides. Fix: Remove the trailing space."
+              },
+              "helpUri": "https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file"
+            },
+            {
+              "id": "unicode_collision",
+              "shortDescription": {
+                "text": "Paths differ only by Unicode normalization"
+              },
+              "help": {
+                "text": "NFC and NFD spellings look identical; macOS treats them as one name. Fix: Rename to the NFC spelling and delete the duplicate."
+              },
+              "helpUri": "https://developer.apple.com/library/archive/technotes/tn/tn1150.html#UnicodeSubtleties"
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "case_collision",
+          "level": "error",
+          "message": {
+            "text": "paths differ only by case and cannot coexist on Windows: src/Util.py, src/util.py"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/Util.py",
+                  "uriBaseId": "%SRCROOT%"
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "portacheck/v1": "72546b714152dd541b3ea180"
+          },
+          "relatedLocations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/util.py",
+                  "uriBaseId": "%SRCROOT%"
+                }
+              },
+              "id": 0
+            }
+          ]
+        },
+        {
+          "ruleId": "git_meta_alias",
+          "level": "error",
+          "message": {
+            "text": "'.GITMODULES' is a non-canonical spelling/alias of .gitmodules: on a case- or alias-insensitive filesystem Git reads it as the real file"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": ".GITMODULES",
+                  "uriBaseId": "%SRCROOT%"
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "portacheck/v1": "8561a6d33ce42fb543325a12"
+          }
+        },
+        {
+          "ruleId": "invalid_char",
+          "level": "error",
+          "message": {
+            "text": "'bad:name' contains character(s) Windows rejects: ':'"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "bad%3Aname",
+                  "uriBaseId": "%SRCROOT%"
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "portacheck/v1": "55fb266b2e030dd83b6bd348"
+          }
+        },
+        {
+          "ruleId": "invalid_char",
+          "level": "error",
+          "message": {
+            "text": "'\\u0007bell' contains character(s) Windows rejects: '\\u0007'"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "gone/%07bell",
+                  "uriBaseId": "%SRCROOT%"
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "portacheck/v1": "b1ff984dd2bdc9f25c8eee6c"
+          }
+        },
+        {
+          "ruleId": "reserved_name",
+          "level": "error",
+          "message": {
+            "text": "'CON.md' collides with the Windows device name CON"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "docs/CON.md",
+                  "uriBaseId": "%SRCROOT%"
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "portacheck/v1": "3a809417d7922f37f3d11750"
+          }
+        },
+        {
+          "ruleId": "trailing_dot",
+          "level": "error",
+          "message": {
+            "text": "'trail.' ends with a dot \u2014 Windows silently strips it"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "trail.",
+                  "uriBaseId": "%SRCROOT%"
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "portacheck/v1": "2f788a378ada36490a6d3cc3"
+          }
+        },
+        {
+          "ruleId": "unicode_collision",
+          "level": "error",
+          "message": {
+            "text": "paths differ only by Unicode normalization and are the same file on macOS: 'cafe\\u0301.txt', 'caf\\u00e9.txt'"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "cafe%CC%81.txt",
+                  "uriBaseId": "%SRCROOT%"
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "portacheck/v1": "e042720552700a20d2b17ba1"
+          },
+          "relatedLocations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "caf%C3%A9.txt",
+                  "uriBaseId": "%SRCROOT%"
+                }
+              },
+              "id": 0
+            }
+          ]
+        },
+        {
+          "ruleId": "invisible_char",
+          "level": "warning",
+          "message": {
+            "text": "'a\\u202eb.txt' contains invisible/bidi format character(s) U+202E \u2014 the name can display differently from what it is"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "a%E2%80%AEb.txt",
+                  "uriBaseId": "%SRCROOT%"
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "portacheck/v1": "d12cfd1ea29928ceffbb8087"
+          }
+        },
+        {
+          "ruleId": "not_nfc",
+          "level": "warning",
+          "message": {
+            "text": "'cafe\\u0301.txt' is not NFC-normalized (composed form: 'caf\\xe9.txt'); macOS and Linux tools can treat the two as different files"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "cafe%CC%81.txt",
+                  "uriBaseId": "%SRCROOT%"
+                }
+              }
+            }
+          ],
+          "partialFingerprints": {
+            "portacheck/v1": "78c617a9c0a8060460dd05df"
+          }
+        }
+      ]
+    }
+  ]
+}

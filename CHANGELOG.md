@@ -2,6 +2,13 @@
 
 ## 0.3.0 — unreleased
 
+### Round 5 (cross-platform filesystem, git internals, monorepo)
+- **Author and maintainer are now "Calas Automations Inc."** in the package metadata, LICENSE, `__author__`, `--version` and the SARIF tool entry (`organization`); a test pins it.
+- **Fixed (fail-open):** an inherited `GIT_DIR` pointing at another repository made `--git` / `--rev` / `--new-since` scan that repository and pass. It now exits 2 with a plain message when the variable disagrees with the folder you named.
+- **New checks** `dotdot_component` and `dot_component` (errors, `--git` / `--rev` only): a git tree can hold entries named `..`, `.` or empty (`git fsck` hasDotdot / hasDot / emptyName); they used to be tidied away and pass. They cannot be switched off by a settings file found in the scanned folder.
+- **New option** `--only GLOB`: report only findings under a folder (monorepo teams); the whole repository is still scanned.
+- Type-check clean (mypy, not part of CI); golden-file tests for all six output formats; seeded property tests (order/duplicate independence, case collisions against brute force, no raw control or bidi characters in any format); `benchmarks/mutation.py` (20 hand-picked condition flips; the one that survived, the 255/256-byte boundary, now has a test).
+
 ### Added and fixed in the fourth review round ("what a stranger gets")
 - **Packaging**: the wheel and sdist now ship `py.typed`, project URLs, Python 3.9-3.13 / OS / Security / Typed classifiers; the sdist also carries the changelog, tests, benchmarks and the pre-commit hook file. Tests run from a fresh checkout without installing first (`pytest` finds `src/`); a test checks that the version agrees across `pyproject.toml`, `__version__`, this changelog and the README.
 - **Settings file on Python 3.9/3.10** (which parse it with a small built-in reader): a broken table header such as `[portacheck` was silently ignored, so the file did nothing and the run passed; it is now a setup error (exit 2), as on 3.11+. A key written twice is rejected the same way tomllib does.
